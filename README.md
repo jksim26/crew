@@ -92,6 +92,22 @@ To keep the dev worker off the subscription while other jobs need it, set local-
 - **Logs:** `.crew/logs/<job>.log`.
 - **Preview first:** `--print` shows the file without installing it.
 
+## Self-review (optional)
+
+`crew review` runs the project's own review routine, on the machine that holds the live files. Point
+it at the routine and say which commands it may run:
+
+```json
+"review": { "routine": "docs/self-review.md", "bash": ["${root}/.venv/bin/python scripts/"] }
+```
+
+- **What it can touch:** it reads the code at `main` plus the main checkout's live, gitignored files,
+  and writes only its own report.
+- **What it opens:** `crew/review-<date>` as the plan PR, which never merges itself. Its proposals are
+  filed as `needs-jk` issues.
+- **When it runs:** schedule it weekly (`crew schedule install review --at 16:00 --weekday 0`) or run
+  it whenever you want a fresh plan.
+
 ## Slack (optional)
 
 GitHub labels stay the truth; Slack is the window. One free workspace can hold many projects, one
