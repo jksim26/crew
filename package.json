@@ -5,7 +5,7 @@
   "description": "Claude Code plugin: an AI team per repo (PM brief, headless dev worker, issue queue).",
   "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test"
   },
   "license": "MIT"
 }
