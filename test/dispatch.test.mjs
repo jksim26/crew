@@ -89,7 +89,7 @@ test("happy path: canary, doing, worktree, agent, push agent branch, PR, @codex 
   // ledger + cleanup
   const l = loadLedger(root);
   assert.equal(l.issues[1].attempts, 1);
-  assert.ok(Math.abs(l.issues[1].cost - 0.801) < 1e-6);
+  assert.ok(Math.abs(l.issues[1].cost - 0.8) < 1e-6);
   assert.ok(lines.some((l2) => l2.startsWith("git worktree remove --force")));
   assert.ok(!fs.existsSync(path.join(root, ".crew", "dispatch.lock")));
   assert.match(fs.readFileSync(path.join(root, ".crew", "dispatch.log"), "utf8"), /"action":"built"/);
@@ -377,4 +377,21 @@ test("parallel: the WIP cap still limits how many start", async () => {
   const r = await runDispatch({ root: tmpRoot(), config: cfg, run: w.run, runStream: w.runStream, now: NOW });
   assert.equal(r.action, "batch");
   assert.equal(r.results.length, 2);
+});
+
+test("the login check runs once per dispatch run, before any issue changes state, with a long timeout", async () => {
+  const issues = [1, 2, 3].map((n) => ({ number: n, title: `Task ${n}`, body: "", labels: [{ name: "ready" }], createdAt: `2026-11-0${n}T00:00:00Z`, url: `u${n}` }));
+  const w = world({ issues });
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", parallel: 3, wip_cap: 5 });
+  await runDispatch({ root: tmpRoot(), config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  const canaries = w.calls.filter((c) => c.line.startsWith("claude -p --max-turns 1"));
+  assert.equal(canaries.length, 1);
+  assert.match(canaries[0].line, /--setting-sources project,local/);
+  const streamArgs = w.streams[0].args.join(" ");
+  assert.match(streamArgs, /--setting-sources project,local/);
+
+  const w2 = world({ issues, canaryFail: true });
+  const r = await runDispatch({ root: tmpRoot(), config: cfg, run: w2.run, runStream: w2.runStream, now: NOW });
+  assert.equal(r.action, "canary-failed");
+  assert.ok(!w2.calls.some((c) => c.line.includes("--add-label doing")));
 });
