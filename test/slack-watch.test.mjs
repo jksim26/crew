@@ -215,3 +215,10 @@ test("dispatch_hours: watch only dispatches inside the windows; windows may cros
   await runWatch({ root: tmpRoot(), config: c, env: tmpEnv(), now: at(15, 0), dispatch: async () => (called++, { action: "idle" }), board: async () => ({ action: "skipped" }) });
   assert.equal(called, 1);
 });
+
+test("news wording: draft reason, gate, and a timed-out login check is not a token problem", () => {
+  assert.match(dispatchNews({ action: "built", issue: 4, url: "u", draft: "tests failed", protected: [] }, config), /\(draft: tests failed\)/);
+  assert.match(dispatchNews({ action: "built", issue: 4, url: "u", draft: null, gate: true, protected: ["x"] }, config), /review gate decides/);
+  assert.match(dispatchNews({ action: "canary-failed", why: "spawnSync claude ETIMEDOUT" }, config), /took too long/);
+  assert.match(dispatchNews({ action: "canary-failed", why: "401 invalid token" }, config), /crew token set/);
+});
