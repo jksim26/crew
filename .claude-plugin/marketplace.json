@@ -1,0 +1,12 @@
+{
+  "name": "crew",
+  "owner": { "name": "JK" },
+  "description": "Marketplace for the crew plugin.",
+  "plugins": [
+    {
+      "name": "crew",
+      "source": "./",
+      "description": "An AI team for a repo: PM brief, headless dev worker, issue queue."
+    }
+  ]
+}

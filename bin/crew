@@ -1,0 +1,8 @@
+#!/usr/bin/env node
+// Thin launcher: kept CommonJS so it runs whatever the nearest package.json says.
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+import(pathToFileURL(path.join(__dirname, "..", "lib", "cli.mjs")).href)
+  .then((m) => m.main(process.argv.slice(2)))
+  .then((code) => { process.exitCode = code; })
+  .catch((err) => { console.error(`crew: ${err.message}`); process.exitCode = 2; });
