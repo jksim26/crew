@@ -178,8 +178,9 @@ test("pm agent file parses and stays read-only", () => {
   assert.doesNotMatch(fm, /Edit|Write|Bash/);
 });
 
-test("claudeEnv removes only the API key", () => {
-  assert.deepEqual(claudeEnv({ ANTHROPIC_API_KEY: "k", HOME: "/h" }), { HOME: "/h" });
+test("claudeEnv removes only the API key (no token on this machine)", () => {
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), "crew-nosecrets-"));
+  assert.deepEqual(claudeEnv({ ANTHROPIC_API_KEY: "k", HOME: "/h", XDG_CONFIG_HOME: cfg, APPDATA: cfg }), { HOME: "/h", XDG_CONFIG_HOME: cfg, APPDATA: cfg });
 });
 
 test("render: STATUS.md is exactly 5 single lines; brief has every section", () => {
@@ -190,7 +191,7 @@ test("render: STATUS.md is exactly 5 single lines; brief has every section", () 
   assert.match(lines[0], /^AS OF: .*jk\/proj · brief: docs\/briefs\/2026-11-08\.md$/);
   assert.match(lines[2], /^REVIEW: 1 PR waiting on you, oldest #9 \(6d\) · 1 draft$/);
   assert.match(lines[3], /^BLOCKED\/DECIDE: 1 blocked, 1 decision · Merge the guard PR\?$/);
-  assert.match(lines[4], /brief cost \$0\.05$/);
+  assert.match(lines[4], /brief ≈\$0\.05 API-equiv\. \(subscription\)$/);
   const b = renderBrief({ data, status: GOOD, mode: "weekly" });
   for (const h of ["# Week in review", "## What happened", "## The week", "## Blocked", "## Decisions for you", "## Next", "## The number", "## Your review queue"]) assert.ok(b.includes(h), h);
   assert.deepEqual(reviewQueue(data).map((p) => p.number), [9]);

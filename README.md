@@ -40,12 +40,16 @@ crew doctor                           # read-only checks; exit 1 on any failure
 crew queue labels                     # ready / doing / in-review / blocked / needs-jk
 ```
 
-For scheduled runs, store a long-lived subscription token outside any repo:
+For scheduled runs, save a long-lived **subscription** token (not an API key) outside any repo:
 
-- Create the token with `claude setup-token`.
-- macOS: save it to `~/.config/crew/secrets.json` as `{"CLAUDE_CODE_OAUTH_TOKEN": "..."}` and set
-  `chmod 600`.
-- Windows: save the same file at `%APPDATA%\crew\secrets.json`.
+```bash
+claude setup-token      # prints a token starting sk-ant-oat, valid one year
+crew token set          # hidden prompt (macOS dialog / Windows secure prompt); tests it with one tiny call
+```
+
+It lands in `~/.config/crew/secrets.json` (Windows: `%APPDATA%\crew\secrets.json`), readable only
+by you. Costs crew prints (for example "≈$0.42 API-equiv.") are what the run would cost at API list
+price; with this token they count against your plan's usage limits and nothing is billed per token.
 
 ## Daily use
 
@@ -64,9 +68,10 @@ For scheduled runs, store a long-lived subscription token outside any repo:
 ## Schedule it
 
 ```bash
+crew schedule install sync --at 06:30                     # fast-forward main before runners use it
 crew schedule install brief --at 19:00
 crew schedule install brief-weekly --at 18:00 --weekday 0
-crew schedule install dispatch --every 60
+crew schedule install dispatch --at 13:00,16:00,21:00      # or --every 60
 crew schedule status
 crew schedule remove dispatch
 ```
