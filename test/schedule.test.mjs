@@ -116,3 +116,9 @@ test("windows: --every anchors at 00:00 so a reinstall keeps the start time", as
   assert.match(t, /-Once -At \(\[datetime\]::Today\) -RepetitionInterval \(New-TimeSpan -Minutes 10\)/);
   assert.doesNotMatch(t, /AddMinutes/);
 });
+
+test("windows: the watch task runs ticks in parallel (dispatch has its own lock); others ignore new", () => {
+  const args = { taskName: "t", root: "C:\\r", args: ["watch"], when: { every: 10 }, logFile: "C:\\r\\w.log", limitMin: 5, node: "n", bin: "b" };
+  assert.match(windowsScript(args), /-MultipleInstances IgnoreNew/);
+  assert.match(windowsScript({ ...args, instances: "Parallel" }), /-MultipleInstances Parallel/);
+});
