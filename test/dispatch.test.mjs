@@ -222,6 +222,16 @@ test("a fix round whose PR was closed while the agent worked pushes and comments
   assert.deepEqual(loadLedger(root).issues[1].review_keys, ["r77"]);
 });
 
+test("onStart is told which issues began, while the run is still going", async () => {
+  const root = tmpRoot();
+  const seen = [];
+  const w = world();
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW, onStart: (info) => { seen.push({ ...info, streams: w.streams.length }); } });
+  assert.equal(r.action, "built");
+  assert.deepEqual(seen.map((x) => x.issues), [[1]]);
+  assert.ok(w.calls.findIndex((c) => c.line.includes("--add-label doing")) >= 0);
+});
+
 test("test_cmd with ${root} is resolved to the main checkout for the agent", async () => {
   const root = tmpRoot();
   const cfg = normalize({ repo: "jk/proj", owner_login: "jk", test_cmd: { default: "${root}/.venv/bin/python -m pytest" } });
