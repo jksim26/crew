@@ -81,3 +81,31 @@ test("installJob on macOS writes the plist and boots it out then in", () => {
   assert.ok(calls.some((c) => c.startsWith("launchctl bootout gui/")));
   assert.ok(calls.some((c) => c.startsWith("launchctl bootstrap gui/") && c.endsWith(plan.file)));
 });
+
+test("windows: the cmd line survives cmd's quote stripping and creates the logs folder", async () => {
+  const { windowsScript } = await import("../lib/schedule.mjs");
+  const t = windowsScript({ taskName: "p-watch", root: "X:\\Claude\\Claude Trading", args: ["watch"], when: { every: 10 },
+    logFile: "X:\\Claude\\Claude Trading\\.crew\\logs\\watch.log", limitMin: 55, node: "C:\\Program Files\\nodejs\\node.exe", bin: "C:\\p\\bin\\crew" });
+  const arg = /-Argument '([^']*)'/.exec(t)[1];
+  assert.ok(arg.startsWith('/d /s /c "(if not exist "X:\\Claude\\Claude Trading\\.crew\\logs" mkdir'), arg);
+  assert.ok(arg.includes('& "C:\\Program Files\\nodejs\\node.exe" "C:\\p\\bin\\crew" watch >> '), arg);
+  assert.ok(arg.endsWith('2>&1"'), arg);
+});
+
+test("windows: the generated cmd line really runs node from a path with spaces", { skip: process.platform !== "win32" }, async () => {
+  const { windowsScript } = await import("../lib/schedule.mjs");
+  const { spawnSync } = await import("node:child_process");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "crew win ")), "my project");
+  fs.mkdirSync(dir);
+  const script = path.join(dir, "hello script.js");
+  fs.writeFileSync(script, "console.log('hello ' + process.argv[2])");
+  const logFile = path.join(dir, ".crew", "logs", "x.log");
+  const t = windowsScript({ taskName: "t", root: dir, args: ["watch"], when: { every: 10 }, logFile, limitMin: 5, node: process.execPath, bin: script });
+  const arg = /-Argument '([^']*)'/.exec(t)[1].replace(/''/g, "'");
+  const r = spawnSync("cmd.exe", [arg], { cwd: dir, windowsVerbatimArguments: true, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(fs.readFileSync(logFile, "utf8"), /hello watch/);
+});

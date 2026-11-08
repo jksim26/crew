@@ -34,7 +34,7 @@ function repos() {
     git(up, "commit", "-q", "-am", msg);
     git(up, "push", "-q", "origin", "HEAD:main");
   };
-  return { local, push };
+  return { local, push, up };
 }
 
 test("sync fast-forwards a clean checkout and leaves untracked files alone", () => {
@@ -51,13 +51,29 @@ test("sync fast-forwards a clean checkout and leaves untracked files alone", () 
   assert.equal(syncCheckout({ root: local, config }).outcome, "up-to-date");
 });
 
-test("sync refuses, and changes nothing, with tracked local edits", () => {
+test("sync refuses, and changes nothing, when origin changed a locally edited file", () => {
   const { local, push } = repos();
   push("two");
   fs.writeFileSync(path.join(local, "a.txt"), "edited\n");
   const r = syncCheckout({ root: local, config });
-  assert.deepEqual([r.ok, r.outcome], [false, "skipped"]);
+  assert.deepEqual([r.ok, r.outcome], [false, "conflict"]);
+  assert.match(r.detail, /a\.txt/);
   assert.equal(fs.readFileSync(path.join(local, "a.txt"), "utf8"), "edited\n");
+});
+
+test("sync fast-forwards past local edits to files origin did not change, and keeps them", () => {
+  const { local, push, up } = repos();
+  fs.writeFileSync(path.join(up, "log.txt"), "base\n");
+  git(up, "add", "log.txt");
+  git(up, "commit", "-q", "-m", "log");
+  git(up, "push", "-q", "origin", "HEAD:main");
+  git(local, "pull", "-q", "--ff-only");
+  push("two");
+  fs.writeFileSync(path.join(local, "log.txt"), "runner wrote this\n");
+  const r = syncCheckout({ root: local, config });
+  assert.deepEqual([r.ok, r.outcome], [true, "fast-forwarded"]);
+  assert.match(r.detail, /kept 1 locally edited/);
+  assert.equal(fs.readFileSync(path.join(local, "log.txt"), "utf8"), "runner wrote this\n");
 });
 
 test("sync refuses on another branch and when diverged", () => {

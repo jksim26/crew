@@ -85,7 +85,7 @@ function fakeSlack({ pinned = [], failUpdate = null } = {}) {
   let n = 0;
   const fetchImpl = async (url, o) => {
     const method = url.split("/").pop();
-    const body = JSON.parse(o.body);
+    const body = Object.fromEntries(new URLSearchParams(o.body));
     calls.push({ method, body, auth: o.headers.Authorization });
     if (method === "pins.list") return { json: async () => ({ ok: true, items: pinned }) };
     if (method === "chat.update" && failUpdate) return { json: async () => ({ ok: false, error: failUpdate }) };
@@ -194,4 +194,24 @@ test("dispatch on a helper machine leaves unlabelled work for the main machine",
   const r = await runDispatch({ root: tmpRoot(), config, run, runStream: async () => assert.fail("no model run"), machine: "mac", now: new Date("2026-11-08T12:00:00Z") });
   assert.equal(r.action, "idle");
   assert.match(r.skipped[0].reason, /runs on pc/);
+});
+
+test("dispatch_hours: watch only dispatches inside the windows; windows may cross midnight", async () => {
+  const { inDispatchHours } = await import("../lib/config.mjs");
+  const at = (h, m) => new Date(2026, 10, 8, h, m);
+  const c = normalize({ ...base, dispatch_hours: ["14:00-19:45", "23:00-01:00"] });
+  assert.equal(inDispatchHours(c, at(14, 0)), true);
+  assert.equal(inDispatchHours(c, at(19, 45)), false);
+  assert.equal(inDispatchHours(c, at(8, 0)), false);
+  assert.equal(inDispatchHours(c, at(0, 30)), true);
+  assert.equal(inDispatchHours(normalize(base), at(8, 0)), true);
+  assert.ok(validate({ ...base, dispatch_hours: ["2pm-5pm"] }).length);
+  assert.ok(validate({ ...base, dispatch_hours: [] }).length);
+
+  let called = 0;
+  const r = await runWatch({ root: tmpRoot(), config: c, env: tmpEnv(), now: at(8, 0), dispatch: async () => (called++, { action: "idle" }), board: async () => ({ action: "skipped" }) });
+  assert.equal(called, 0);
+  assert.equal(r.dispatch.action, "quiet");
+  await runWatch({ root: tmpRoot(), config: c, env: tmpEnv(), now: at(15, 0), dispatch: async () => (called++, { action: "idle" }), board: async () => ({ action: "skipped" }) });
+  assert.equal(called, 1);
 });

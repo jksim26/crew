@@ -83,6 +83,9 @@ budget, WIP cap, queue). It wakes the model only when an issue is `ready` or a r
 It refreshes the Slack board when a label changed and posts one news line when something happened;
 the same line is not repeated within 6 hours. `dispatch --at ...` still works for fixed times.
 
+To keep the dev worker off the subscription while other jobs need it, set local-time windows:
+`"dispatch_hours": ["14:00-19:45"]`. Outside them `watch` only refreshes the board.
+
 - **macOS:** a launchd user agent in `~/Library/LaunchAgents`.
 - **Windows:** a Task Scheduler task under `\crew\`, using S4U, Limited, `IgnoreNew` and an
   explicit execution limit.
