@@ -81,6 +81,36 @@ test("built-in roles cannot be listed as project roles", () => {
   assert.ok(validate({ ...base, roles: ["trade", "pm"] }).some((s) => s.includes('"pm" is built in')));
 });
 
+test("commands: per-OS objects and ${root} substitution", async () => {
+  const { resolveCmd } = await import("../lib/config.mjs");
+  const v = { darwin: "${root}/.venv/bin/python -m pytest -q", win32: "${root}\\.venv\\Scripts\\python.exe -m pytest -q" };
+  assert.deepEqual(validate({ ...base, test_cmd: v }), []);
+  assert.equal(resolveCmd(v, "/r", "darwin"), "/r/.venv/bin/python -m pytest -q");
+  assert.equal(resolveCmd(v, "C:\\r", "win32"), "C:\\r\\.venv\\Scripts\\python.exe -m pytest -q");
+  assert.equal(resolveCmd(v, "/r", "linux"), null);
+  assert.equal(resolveCmd({ default: "make test" }, "/r", "linux"), "make test");
+  assert.equal(resolveCmd("npm test", "/r"), "npm test");
+  assert.ok(validate({ ...base, test_cmd: { macos: "x" } }).some((s) => s.includes("test_cmd.macos")));
+  assert.ok(validate({ ...base, test_cmd: {} }).some((s) => s.includes("empty")));
+  assert.ok(validate({ ...base, test_cmd: 5 }).length);
+});
+
+test("mainCheckout follows a linked worktree back to the main checkout", async () => {
+  const { mainCheckout } = await import("../lib/config.mjs");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "crew-wt-"));
+  const main = path.join(base, "main");
+  fs.mkdirSync(path.join(main, ".git", "worktrees", "wt"), { recursive: true });
+  const wt = path.join(base, "wt");
+  fs.mkdirSync(wt);
+  fs.writeFileSync(path.join(wt, ".git"), `gitdir: ${path.join(main, ".git", "worktrees", "wt")}\n`);
+  assert.equal(mainCheckout(wt), main);
+  assert.equal(mainCheckout(main), main);
+  assert.equal(mainCheckout(path.join(base, "nope")), path.join(base, "nope"));
+});
+
 test("commands must be non-empty strings or null", () => {
   assert.ok(validate({ ...base, test_cmd: "" }).length);
   assert.deepEqual(validate({ ...base, test_cmd: null, protected_paths_cmd: "python check.py" }), []);

@@ -130,6 +130,18 @@ crew schedule remove dispatch
   - `local` writes the files only
   - `commit` pushes straight to the default branch
 - **Role memory files:** the default is `docs/handoff/<role>.md`.
+- **Per-machine commands:** `test_cmd` and `protected_paths_cmd` can be one string or a per-OS
+  object. Use this when the command differs per machine, for example a Python venv:
+
+  ```json
+  "test_cmd": { "darwin": "${root}/.venv/bin/python -m pytest -q",
+                "win32":  "${root}\\.venv\\Scripts\\python.exe -m pytest -q" }
+  ```
+
+  `${root}` is replaced by the project's main checkout. The dev worker runs in a throwaway
+  worktree, which has none of the untracked files such as `.venv`.
+- **`.env` is blocked:** the dev worker is always denied reading or editing `.env` files. This is
+  enforced by its permissions, not just by instructions.
 
 ## Develop
 
