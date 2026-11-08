@@ -395,3 +395,58 @@ test("the login check runs once per dispatch run, before any issue changes state
   assert.equal(r.action, "canary-failed");
   assert.ok(!w2.calls.some((c) => c.line.includes("--add-label doing")));
 });
+
+test("protected_draft false: a protected PR opens normally for the project's gate; drafts only for real problems", async () => {
+  const w = world({ changed: ["trading/risk/x.py"] });
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", protected_paths: ["trading/risk/*"], protected_draft: false });
+  const r = await runDispatch({ root: tmpRoot(), config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  const create = w.calls.find((c) => c.line.startsWith("gh pr create"));
+  assert.ok(!create.line.includes("--draft") && !create.line.includes("needs-jk"));
+  assert.match(create.input, /the project's PR gate reviews this/);
+  assert.equal(r.gate, true);
+  assert.equal(r.draft, null);
+});
+
+test("merge codex-clean: merges a green, Codex-clean, unprotected agent PR; skips protected or unreviewed ones", async () => {
+  const { mergeClean } = await import("../lib/dispatch.mjs");
+  const calls = [];
+  const codexOk = { user: { login: "chatgpt-codex-connector[bot]" }, created_at: "2026-11-09T02:00:00Z", body: "Codex Review: Didn't find any major issues. Nice work." };
+  const run = (cmd, args) => {
+    const l = `${cmd} ${args.join(" ")}`;
+    calls.push(l);
+    if (l.startsWith("gh pr list")) return { ok: true, stdout: JSON.stringify([
+      { number: 11, headRefName: "agent/1-a", isDraft: false },
+      { number: 12, headRefName: "agent/2-b", isDraft: false },
+      { number: 13, headRefName: "agent/3-c", isDraft: false },
+      { number: 14, headRefName: "agent/4-d", isDraft: true },
+    ]) };
+    if (l.startsWith("gh pr view 11")) return { ok: true, stdout: JSON.stringify({ files: [{ path: "lib/a.js" }], statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "SKIPPED" }], mergeable: "MERGEABLE" }) };
+    if (l.startsWith("gh pr view 12")) return { ok: true, stdout: JSON.stringify({ files: [{ path: "trading/risk/x.py" }], statusCheckRollup: [{ conclusion: "SUCCESS" }], mergeable: "MERGEABLE" }) };
+    if (l.startsWith("gh pr view 13")) return { ok: true, stdout: JSON.stringify({ files: [{ path: "lib/c.js" }], statusCheckRollup: [{ conclusion: "SUCCESS" }], mergeable: "MERGEABLE" }) };
+    if (l.includes("issues/11/comments")) return { ok: true, stdout: JSON.stringify([codexOk]) };
+    if (l.includes("/comments") || l.includes("/reviews")) return { ok: true, stdout: "[]" };
+    return { ok: true, stdout: "" };
+  };
+  const ledger = { days: {}, issues: Object.fromEntries([1, 2, 3, 4].map((n) => [n, { last_push_at: "2026-11-09T01:00:00Z", review_keys: [] }])) };
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", protected_paths: ["trading/risk/*"], merge: "codex-clean" });
+  const merged = mergeClean({ config: cfg, ledger, run, root: tmpRoot() });
+  assert.deepEqual(merged, [11]);
+  assert.ok(calls.includes("gh pr merge 11 --repo jk/proj --merge --delete-branch"));
+  assert.ok(!calls.some((c) => /gh pr merge 1[234]/.test(c)));
+});
+
+test("reconcile: a closed PR whose issue is ready again settles without blocking", async () => {
+  const { reconcile } = await import("../lib/dispatch.mjs");
+  const calls = [];
+  const run = (cmd, args) => {
+    const l = `${cmd} ${args.join(" ")}`;
+    calls.push(l);
+    if (l.startsWith("gh pr view 20")) return { ok: true, stdout: '{"state":"CLOSED"}' };
+    if (l.startsWith("gh issue view 5")) return { ok: true, stdout: '{"labels":[{"name":"ready"}]}' };
+    return { ok: true, stdout: "" };
+  };
+  const ledger = { days: {}, issues: { 5: { pr: 20, cost: 1, attempts: 1, fix_rounds: 0, review_keys: [] } } };
+  reconcile({ config, ledger, run, root: tmpRoot() });
+  assert.equal(ledger.issues[5].settled, "closed");
+  assert.ok(!calls.some((c) => c.includes("--add-label blocked")));
+});
