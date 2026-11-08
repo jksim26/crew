@@ -117,7 +117,7 @@ it at the routine and say which commands it may run:
 GitHub labels stay the truth; Slack is the window. One free workspace can hold many projects, one
 channel each.
 
-1. Create a Slack app (api.slack.com/apps, "From scratch") with the bot scopes `chat:write`,
+1. Create a Slack app (api.slack.com/apps, "From scratch") with the bot scopes `chat:write`, `channels:history` (for Slack commands),
    `pins:read` and `pins:write`, and install it to your workspace.
 2. Invite it to the project channel (`/invite @your-app`) and copy the channel ID (channel name,
    then the bottom of the About tab).
@@ -127,13 +127,59 @@ channel each.
 
 `"board": false` or `"news": false` turns either half off.
 
-## Two machines: a main runner and helpers
+## A new project in one command
+
+Create the GitHub repo and the Slack channel (invite `@crew`), then on the central machine:
+
+```bash
+crew project add --repo owner/name --slack-channel C0123ABCD --roles ops
+```
+
+It does every remaining step:
+
+1. Clones the repo next to the project you run it from, or into `--dir`.
+2. Writes `.claude/crew.json`, copying machines, caps and Slack settings from that project.
+3. Adds `.crew/` to `.gitignore` and pushes the setup commit.
+4. Creates the labels and runs `crew doctor`.
+5. Schedules sync, watch, brief and brief-weekly.
+6. Pins the Slack board and says hello.
+
+Re-running it is safe: steps that are already done are skipped.
+
+**Windows without admin:** a job that Windows refuses to register as S4U falls back to a
+"run while you are logged in" task, so no admin prompt is needed (`--logon auto`, the default).
+
+## Commands from Slack
+
+Add your Slack member ID (profile > ⋯ > Copy member ID) as a commander:
+
+```json
+"slack": { "channel": "C0123ABCD", "commanders": ["U0123ABCD"] }
+```
+
+The Slack app also needs the `channels:history` scope (reinstall it after adding the scope).
+
+`crew watch` then reads `crew …` messages from commanders and replies in the thread:
+
+- `crew help`
+- `crew brief`, `crew brief weekly`
+- `crew review`
+- `crew board`
+- `crew next`
+- `crew doctor`
+- `crew project add repo=owner/name channel=C0123 [dir=...] [roles=a,b]`
+
+Only those commands run, each mapped to a fixed crew command line with no shell. Nothing from
+Slack can label `ready`. A messenger bot that posts as you (for example Grok Bot's Slack app) can
+drive the central machine this way without any open port or tunnel.
+
+## Two machines: a central machine and helpers
 
 ```json
 "machines": { "main": "pc", "helpers": ["mac"] }
 ```
 
-Each machine names itself once with `crew machine set pc` (stored machine-locally, next to the
+Each machine names itself once with `crew machine set pc` (`main` is the central machine) (stored machine-locally, next to the
 token). Then `crew queue labels` creates a `pc` and a `mac` label.
 
 - **Unlabelled work** runs on the main machine.

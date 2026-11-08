@@ -17,7 +17,7 @@ const tmpRoot = () => fs.mkdtempSync(path.join(os.tmpdir(), "crew-slack-"));
 const tmpEnv = () => ({ XDG_CONFIG_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "crew-cfg-")), APPDATA: fs.mkdtempSync(path.join(os.tmpdir(), "crew-cfg-")), CREW_SLACK_TOKEN: "xoxb-test" });
 
 test("config: slack and machines validate and default", () => {
-  assert.deepEqual(config.slack, { channel: "C0123ABCD", board: true, news: true });
+  assert.deepEqual(config.slack, { channel: "C0123ABCD", board: true, news: true, commanders: [] });
   assert.deepEqual(machineNames(config), ["pc", "mac"]);
   assert.equal(normalize(base).slack, null);
   assert.deepEqual(machineNames(normalize(base)), []);
@@ -179,7 +179,7 @@ test("watch: dispatch, then board, then one news line, not repeated within 6 hou
 test("ensureLabels also creates one label per machine", () => {
   const calls = [];
   ensureLabels(config, (cmd, args) => (calls.push(args.join(" ")), { ok: true, stdout: "" }));
-  assert.ok(calls.some((c) => c.startsWith("label create pc ") && /main runner/.test(c)));
+  assert.ok(calls.some((c) => c.startsWith("label create pc ") && /central machine/.test(c)));
   assert.ok(calls.some((c) => c.startsWith("label create mac ") && /helper/.test(c)));
 });
 
