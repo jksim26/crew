@@ -78,6 +78,10 @@ crew schedule status
 crew schedule remove watch
 ```
 
+**Several workers at once:** set `"parallel": 5` (with a `"wip_cap"` at least that high). Each run
+then starts up to that many `ready` issues together, each in its own worktree, with the day's budget
+shared out between them. Expect more merge conflicts when tasks touch the same files.
+
 `watch` is the usual way to run dev. Every 10 minutes it does the plain checks (lock, lease,
 budget, WIP cap, queue). It wakes the model only when an issue is `ready` or a review needs a fix.
 It refreshes the Slack board when a label changed and posts one news line when something happened;

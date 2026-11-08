@@ -49,6 +49,8 @@ function world(opts = {}) {
     if (line.startsWith("git rev-list")) return ok(`${opts.commits ?? 2}\n`);
     if (line.startsWith("git diff --name-only")) return ok((opts.changed ?? ["lib/text.mjs"]).join("\n") + "\n");
     if (cmd === "git") return ok("");
+    if (/run-tests(\.cmd)?$/.test(cmd) || (cmd === "cmd" && /run-tests/.test(line)))
+      return opts.crewTestsFail ? { ok: false, code: 1, stdout: "1 failed, 9 passed", stderr: "" } : ok("10 passed");
     return { ok: false, code: 1, stdout: "", stderr: `unexpected ${line}` };
   };
   const streams = [];
@@ -202,7 +204,10 @@ test("test_cmd with ${root} is resolved to the main checkout for the agent", asy
   await runDispatch({ root, config: cfg, run: w.run, runStream: w.runStream, now: NOW });
   const { args, o } = w.streams[0];
   assert.ok(args.includes(`Bash(${root}/.venv/bin/python -m pytest:*)`));
-  assert.ok(o.input.includes(`Test command: ${root}/.venv/bin/python -m pytest`));
+  assert.ok(o.input.includes(`(it runs: ${root}/.venv/bin/python -m pytest)`));
+  const runner = args.find((a) => /^Bash\(.*run-tests(\.cmd)?:\*\)$/.test(a));
+  assert.ok(runner, "the agent may call the test runner script by its plain path");
+  assert.ok(args.some((a) => a.startsWith("PowerShell(") && a.includes("run-tests")));
 });
 
 test("testCmdBase lets the agent run single test files without opening the interpreter", async () => {
@@ -319,4 +324,57 @@ test("codexFindings ignores Codex's own status summary comments", () => {
     return { ok: true, stdout: "[]" };
   };
   assert.deepEqual(codexFindings(config, 12, "2026-11-08T08:00:00Z", run), []);
+});
+
+test("crew runs the tests itself: a failure makes the PR a draft and says so", async () => {
+  const w = world({ crewTestsFail: true });
+  const r = await runDispatch({ root: tmpRoot(), config: normalize({ repo: "jk/proj", owner_login: "jk", test_cmd: "npm test" }), run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "built");
+  const create = w.calls.find((c) => c.line.startsWith("gh pr create"));
+  assert.match(create.line, /--draft/);
+  assert.match(create.input, /\*\*Tests run by crew:\*\* \*\*FAILED\*\* \(`1 failed, 9 passed`\)/);
+});
+
+test("writeTestRunner: a plain script per platform that forwards extra args", async () => {
+  const { writeTestRunner } = await import("../lib/dispatch.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-runner-"));
+  const sh = writeTestRunner(dir, "npm test --", "darwin");
+  assert.equal(fs.readFileSync(sh, "utf8"), '#!/bin/sh\nexec npm test -- "$@"\n');
+  const cmd = writeTestRunner(dir, '"X:\\a b\\py.exe" -m pytest -q', "win32");
+  assert.ok(cmd.endsWith("run-tests.cmd"));
+  assert.equal(fs.readFileSync(cmd, "utf8"), '@echo off\r\n"X:\\a b\\py.exe" -m pytest -q %*\r\n');
+  assert.equal(writeTestRunner(dir, null), null);
+});
+
+test("windows: crew's own test run really executes the runner script", { skip: process.platform !== "win32" }, async () => {
+  const { writeTestRunner, runTests } = await import("../lib/dispatch.mjs");
+  const { run } = await import("../lib/exec.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-runner-"));
+  const okRunner = writeTestRunner(dir, `"${process.execPath}" -e "process.exit(0)"`);
+  assert.equal(runTests(run, okRunner, dir).passed, true);
+  fs.rmSync(okRunner);
+  const badRunner = writeTestRunner(dir, `"${process.execPath}" -e "process.exit(3)"`);
+  assert.equal(runTests(run, badRunner, dir).passed, false);
+});
+
+test("parallel: several ready issues start at once, each in its own worktree, budget shared", async () => {
+  const issues = [1, 2, 3, 4].map((n) => ({ number: n, title: `Task ${n}`, body: "do it", labels: [{ name: "ready" }], createdAt: `2026-11-0${n}T00:00:00Z`, url: `u${n}` }));
+  const w = world({ issues });
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", parallel: 3, wip_cap: 10, caps: { daily_budget_usd: 30 } });
+  const r = await runDispatch({ root: tmpRoot(), config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "batch");
+  assert.deepEqual(r.results.map((x) => [x.action, x.issue]), [["built", 1], ["built", 2], ["built", 3]]);
+  assert.equal(w.streams.length, 3);
+  const wts = new Set(w.calls.filter((c) => c.line.startsWith("git worktree add")).map((c) => c.line.split(" ").slice(-2)[0]));
+  assert.equal(wts.size, 3);
+  for (const s of w.streams) assert.ok(Number(s.args[s.args.indexOf("--max-budget-usd") + 1]) <= 10);
+});
+
+test("parallel: the WIP cap still limits how many start", async () => {
+  const issues = [1, 2, 3].map((n) => ({ number: n, title: `Task ${n}`, body: "", labels: [{ name: "ready" }], createdAt: `2026-11-0${n}T00:00:00Z`, url: `u${n}` }));
+  const w = world({ issues, openPrs: [{ number: 50, headRefName: "agent/50-x", url: "u" }] });
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", parallel: 5, wip_cap: 3 });
+  const r = await runDispatch({ root: tmpRoot(), config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "batch");
+  assert.equal(r.results.length, 2);
 });
