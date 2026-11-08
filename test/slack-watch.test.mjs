@@ -176,6 +176,24 @@ test("watch: dispatch, then board, then one news line, not repeated within 6 hou
   assert.equal(noSlack.news, null);
 });
 
+test("watch: when dev runs start, the board refreshes and a 'started' line goes out before the batch ends", async () => {
+  const order = [];
+  const r = await runWatch({
+    root: tmpRoot(), config, env: tmpEnv(), now: new Date("2026-11-08T10:00:00Z"),
+    dispatch: async ({ onStart }) => {
+      await onStart({ action: "started", issues: [381, 382] });
+      order.push("batch ran");
+      return { action: "idle" };
+    },
+    board: async () => (order.push("board"), { action: "updated" }),
+    news: async ({ text }) => (order.push(text), { ok: true }),
+  });
+  assert.deepEqual(order.slice(0, 3).map((x) => x.slice(0, 20)), ["board", "🏗️ 2 dev workers st", "batch ran"]);
+  assert.match(order[1], /issues\/381\|#381>, <https:\/\/github.com\/jk\/proj\/issues\/382\|#382>/);
+  assert.deepEqual(r.started.issues, [381, 382]);
+  assert.match(dispatchNews({ action: "started", issues: [5], fix: true, pr: 9 }, config), /fixing Codex's comments/);
+});
+
 test("ensureLabels also creates one label per machine", () => {
   const calls = [];
   ensureLabels(config, (cmd, args) => (calls.push(args.join(" ")), { ok: true, stdout: "" }));
