@@ -240,3 +240,15 @@ test("news wording: draft reason, gate, and a timed-out login check is not a tok
   assert.match(dispatchNews({ action: "canary-failed", why: "spawnSync claude ETIMEDOUT" }, config), /took too long/);
   assert.match(dispatchNews({ action: "canary-failed", why: "401 invalid token" }, config), /crew token set/);
 });
+
+test("notifyOwner: @mentions every commander in the project channel; no channel is a clean refusal", async () => {
+  const { notifyOwner } = await import("../lib/slack.mjs");
+  const sent = [];
+  const fetchImpl = async (url, o) => (sent.push(Object.fromEntries(new URLSearchParams(o.body))), { json: async () => ({ ok: true }) });
+  const config = { slack: { channel: "C0123ABCD", commanders: ["U0OWNER01"], news: false } };
+  const r = await notifyOwner({ config, text: "UAC prompt waiting on the PC", env: { CREW_SLACK_TOKEN: "xoxb-t" }, fetchImpl });
+  assert.equal(r.ok, true);
+  assert.equal(sent[0].channel, "C0123ABCD");
+  assert.equal(sent[0].text, "<@U0OWNER01> 🔔 UAC prompt waiting on the PC");
+  assert.match((await notifyOwner({ config: {}, text: "x" })).why, /no slack channel/);
+});

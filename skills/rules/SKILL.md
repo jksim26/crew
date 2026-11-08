@@ -39,3 +39,7 @@ for the project's settings (repo, protected paths, caps, roles).
    file (`crew roles` lists them), files unfinished work as `needs-jk` issues, and releases the
    lease. A session that is about to edit the same files the dev worker might touch can run
    `crew lease on` first; the dispatcher stays away for 2 hours or until `crew lease off`.
+9. **Ping the owner before anything waits on them at the machine.** Before you raise a UAC/admin
+   prompt, a login or any click only a person at that computer can do, run
+   `crew notify "<what it is, and on which machine>"` (it @mentions the owner in the project's
+   Slack channel), then raise it and wait. Never raise one silently.
