@@ -109,3 +109,10 @@ test("windows: the generated cmd line really runs node from a path with spaces",
   assert.equal(r.status, 0, r.stderr);
   assert.match(fs.readFileSync(logFile, "utf8"), /hello watch/);
 });
+
+test("windows: --every anchors at 00:00 so a reinstall keeps the start time", async () => {
+  const { windowsScript } = await import("../lib/schedule.mjs");
+  const t = windowsScript({ taskName: "p-watch", root: "C:\\r", args: ["watch"], when: { every: 10 }, logFile: "C:\\r\\w.log", limitMin: 55, node: "n", bin: "b" });
+  assert.match(t, /-Once -At \(\[datetime\]::Today\) -RepetitionInterval \(New-TimeSpan -Minutes 10\)/);
+  assert.doesNotMatch(t, /AddMinutes/);
+});
