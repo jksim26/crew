@@ -1,6 +1,6 @@
 {
   "name": "crew",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Claude Code plugin: an AI team per repo (PM brief, headless dev worker, issue queue).",
   "engines": { "node": ">=20" },
