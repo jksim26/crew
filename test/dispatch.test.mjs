@@ -205,6 +205,42 @@ test("test_cmd with ${root} is resolved to the main checkout for the agent", asy
   assert.ok(o.input.includes(`Test command: ${root}/.venv/bin/python -m pytest`));
 });
 
+test("testCmdBase lets the agent run single test files without opening the interpreter", async () => {
+  const { testCmdBase } = await import("../lib/dispatch.mjs");
+  assert.equal(testCmdBase('/r/.venv/bin/python -m pytest -q -m "not integration"'), "/r/.venv/bin/python -m pytest");
+  assert.equal(testCmdBase("npm test -- --watch"), "npm test");
+  assert.equal(testCmdBase("npm test"), "npm test");
+  assert.equal(testCmdBase("make test"), "make test");
+  const p = agentPermissions(normalize({ repo: "a/b", owner_login: "a", test_cmd: '/py -m pytest -q -m "not integration"' }));
+  assert.ok(p.allowed.includes("Bash(/py -m pytest:*)"));
+  assert.ok(!p.allowed.some((x) => x === "Bash(/py:*)"));
+});
+
+test("reconcile closes the issue of a merged agent PR and blocks one closed unmerged", async () => {
+  const { reconcile } = await import("../lib/dispatch.mjs");
+  const root = tmpRoot();
+  const ledger = { days: {}, issues: { 1: { pr: 12, cost: 1, attempts: 1, fix_rounds: 0, review_keys: [] }, 2: { pr: 13, cost: 1, attempts: 1, fix_rounds: 0, review_keys: [] } } };
+  const calls = [];
+  const run = (cmd, args, o = {}) => {
+    const l = `${cmd} ${args.join(" ")}`;
+    calls.push({ l, input: o.input });
+    if (l.startsWith("gh pr view 12")) return { ok: true, stdout: '{"state":"MERGED"}' };
+    if (l.startsWith("gh pr view 13")) return { ok: true, stdout: '{"state":"CLOSED"}' };
+    if (l.startsWith("gh issue view 1 ")) return { ok: true, stdout: '{"state":"OPEN","labels":[{"name":"in-review"},{"name":"bug"}]}' };
+    if (l.startsWith("gh issue view 2 ")) return { ok: true, stdout: '{"labels":[{"name":"in-review"}]}' };
+    return { ok: true, stdout: "" };
+  };
+  reconcile({ config, ledger, run, root });
+  assert.ok(calls.some((c) => c.l === "gh issue edit 1 --repo jk/proj --remove-label in-review"));
+  assert.ok(calls.some((c) => c.l.startsWith("gh issue close 1 --repo jk/proj --reason completed")));
+  assert.ok(calls.some((c) => c.l.startsWith("gh issue edit 2 --repo jk/proj --add-label blocked")));
+  assert.equal(ledger.issues[1].settled, "merged");
+  assert.equal(ledger.issues[2].settled, "closed");
+  const n = calls.length;
+  reconcile({ config, ledger, run, root });
+  assert.equal(calls.length, n, "settled issues are not looked up again");
+});
+
 test("dry run changes nothing", async () => {
   const root = tmpRoot();
   const w = world();

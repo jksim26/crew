@@ -49,6 +49,11 @@ test("nextIssue: exclude hook and empty queue", () => {
   assert.equal(nextIssue(config, { run: fakeGh({ "gh issue list": { stdout: "[]" } }).run }).issue, null);
 });
 
+test("nextIssue: the owner's ready overrides a leftover needs-jk label", () => {
+  const { run } = fakeGh({ "gh issue list": { stdout: JSON.stringify([issue(7, ["ready", "needs-jk"])]) }, "gh api": { stdout: events("jk") } });
+  assert.equal(nextIssue(config, { run }).issue.number, 7);
+});
+
 test("readyLabeler follows labeled/unlabeled history", () => {
   const ev = [[
     { event: "labeled", label: { name: "ready" }, actor: { login: "jk" } },
