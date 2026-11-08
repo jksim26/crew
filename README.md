@@ -8,7 +8,7 @@ team's memory lives in files and GitHub, not in long-running chats.
 | **PM** (reads only) | Writes a daily brief in plain language plus a 5-line `STATUS.md`; a Sunday week in review |
 | **Dev** (headless) | Takes one `ready` GitHub issue, builds it in a throwaway worktree, commits locally, exits |
 | **Dispatcher** (a plain script) | Decides if there is work, runs dev under hard caps, pushes `agent/*`, opens the PR |
-| **Codex** | Reviews PRs; one automatic fix round, then the issue is `blocked` for you |
+| **Codex** | Reviews PRs; up to 3 automatic fix rounds (`caps.fix_rounds`), then the issue is `blocked` for you |
 | **You** | Mark issues `ready`, merge PRs, make the calls the brief asks for |
 | **Slack** (optional) | A pinned board per project (ready / doing / in review / blocked / waiting for you) plus short news lines; any bot, e.g. Grok, can read it |
 
@@ -224,7 +224,7 @@ token). Then `crew queue labels` creates a `pc` and a `mac` label.
   "test_cmd": "npm test",
   "wip_cap": 2,
   "caps": { "max_turns": 60, "max_budget_usd": 5, "wall_min": 40, "idle_min": 10,
-            "issue_budget_usd": 15, "issue_attempts": 2, "daily_budget_usd": 25 },
+            "issue_budget_usd": 15, "issue_attempts": 2, "fix_rounds": 3, "daily_budget_usd": 25 },
   "brief": { "sources": ["docs/log.md"], "deliver": "pr" },
   "roles": ["trade", { "name": "ops", "memory": "docs/roles/ops.md" }],
   "slack": { "channel": "C0123ABCD", "board": true, "news": true },

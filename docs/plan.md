@@ -37,7 +37,7 @@ The project owns its policy and state; the plugin owns the machinery.
   "test_cmd": "...",
   "wip_cap": 2,
   "caps": { "max_turns": 60, "max_budget_usd": 5, "wall_min": 40, "idle_min": 10,
-            "issue_budget_usd": 15, "issue_attempts": 2, "daily_budget_usd": 25 },
+            "issue_budget_usd": 15, "issue_attempts": 2, "fix_rounds": 3, "daily_budget_usd": 25 },
   "brief": { "sources": ["wiki/log.md"], "deliver": "pr" },
   "roles": ["trade", "ops"]
 }
