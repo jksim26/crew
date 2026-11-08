@@ -126,3 +126,11 @@ test("non-object config is refused", () => {
   assert.deepEqual(validate([]), ["config must be a JSON object"]);
   assert.deepEqual(validate(null), ["config must be a JSON object"]);
 });
+
+test("resolveCmd quotes a root with spaces, once, and leaves quoted or space-free paths alone", async () => {
+  const { resolveCmd } = await import("../lib/config.mjs");
+  const win = '${root}\\.venv\\Scripts\\python.exe -m pytest -q -m "not integration"';
+  assert.equal(resolveCmd(win, "X:\\Claude\\Claude Trading"), '"X:\\Claude\\Claude Trading\\.venv\\Scripts\\python.exe" -m pytest -q -m "not integration"');
+  assert.equal(resolveCmd('"${root}/.venv/bin/python" -m pytest', "/a b"), '"/a b/.venv/bin/python" -m pytest');
+  assert.equal(resolveCmd("${root}/.venv/bin/python -m pytest", "/ab"), "/ab/.venv/bin/python -m pytest");
+});
