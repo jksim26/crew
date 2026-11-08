@@ -13,8 +13,9 @@ watching. You get exactly one task (a GitHub issue) and a fresh git worktree on 
 2. For a change bigger than a few edits, brief the `implementer` subagent with a precise plan
    (files, functions, behaviour, tests) and review its diff yourself. For small changes, do it
    directly.
-3. Write or update tests first where the task is testable. Run the project's test command (given
-   in the task) and make it pass. Never delete or weaken an existing test to make it pass.
+3. Write or update tests first where the task is testable. Run the tests that cover your change
+   (the task says how) and make them pass. Do not run the whole suite: crew runs it after you, and a
+   command that prints nothing for a long time gets the run stopped as stuck. Never delete or weaken an existing test to make it pass.
 4. Commit your work locally with `git add` + `git commit`, one or a few commits with clear
    messages. **Do not push. Do not run `gh`.** The dispatcher pushes your branch and opens the PR.
 5. Stop when the task is done, or when you hit something you cannot or should not do. Finishing

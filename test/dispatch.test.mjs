@@ -485,3 +485,11 @@ test("reconcile: a closed PR whose issue is ready again settles without blocking
   assert.equal(ledger.issues[5].settled, "closed");
   assert.ok(!calls.some((c) => c.includes("--add-label blocked")));
 });
+
+test("gitWhy keeps the reason, not the 'To <url>' line", async () => {
+  const { gitWhy } = await import("../lib/dispatch.mjs");
+  const why = gitWhy({ code: 1, stderr: "To https://github.com/a/b.git\n ! [rejected]        HEAD -> agent/1-x (fetch first)\nerror: failed to push some refs\n" });
+  assert.match(why, /rejected.*fetch first.*failed to push/);
+  assert.doesNotMatch(why, /^To /);
+  assert.equal(gitWhy({ code: 128, stderr: "" }), "exit 128");
+});
