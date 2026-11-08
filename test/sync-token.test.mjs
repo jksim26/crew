@@ -45,7 +45,8 @@ test("sync fast-forwards a clean checkout and leaves untracked files alone", () 
   const r = syncCheckout({ root: local, config });
   assert.deepEqual([r.ok, r.outcome], [true, "fast-forwarded"]);
   assert.match(r.detail, /2 commit/);
-  assert.equal(fs.readFileSync(path.join(local, "a.txt"), "utf8"), "1\ntwo\nthree\n");
+  // Windows git may check files out with CRLF (core.autocrlf); compare content, not line endings.
+  assert.equal(fs.readFileSync(path.join(local, "a.txt"), "utf8").replace(/\r\n/g, "\n"), "1\ntwo\nthree\n");
   assert.equal(fs.readFileSync(path.join(local, "notes.txt"), "utf8"), "mine\n");
   assert.equal(syncCheckout({ root: local, config }).outcome, "up-to-date");
 });
