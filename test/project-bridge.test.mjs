@@ -110,7 +110,7 @@ test("parseCommand: fixed argv per command, never a shell, never ready", () => {
   assert.ok(validate({ ...base, slack: { channel: "C0123ABCD", commanders: ["jk"] } }).some((p) => /commanders/.test(p)));
 });
 
-test("runCommands: first run listens from now; then runs owner commands and replies in thread", async () => {
+test("runCommands: first run looks back 30 min; then runs owner commands and replies in thread", async () => {
   const root = tmp("crew-cmd-");
   const config = normalize({ ...base, slack: { channel: "C0123ABCD", commanders: ["U0OWNER01"] } });
   const env = { CREW_SLACK_TOKEN: "xoxb-test" };
@@ -132,10 +132,7 @@ test("runCommands: first run listens from now; then runs owner commands and repl
   const runs = [];
   const run = (cmd, args) => (runs.push(args.slice(1)), { ok: true, stdout: "next: #384 door-worst-price" });
 
-  const first = await runCommands({ root, config, env, fetchImpl, run, now: new Date(100_000) });
-  assert.match(first.skipped, /first run/);
-  assert.equal(runs.length, 0);
-
+  // First run: looks back 30 minutes, so a command typed right after setup is still answered.
   const r = await runCommands({ root, config, env, fetchImpl, run, now: new Date(200_000) });
   assert.equal(r.ran, 2); // "crew next" ran; "queue set ... ready" got an error reply
   assert.deepEqual(runs, [["queue", "next"]]);
@@ -159,4 +156,20 @@ test("project add: refuses a folder that holds another repo, or a non-empty non-
   fs.mkdirSync(junk);
   fs.writeFileSync(path.join(junk, "a.txt"), "x");
   await assert.rejects(addProject({ repo: "jk/newproj", dir: junk, run: w.run }), /not empty but is not a git repo/);
+});
+
+test("runCommands: the first run never replays messages older than 30 minutes", async () => {
+  const root = tmp("crew-cmd-");
+  const config = normalize({ ...base, slack: { channel: "C0123ABCD", commanders: ["U0OWNER01"] } });
+  const now = new Date(10_000_000);
+  let asked;
+  const fetchImpl = async (url, o) => {
+    const body = Object.fromEntries(new URLSearchParams(o.body));
+    if (url.endsWith("conversations.history")) { asked = Number(body.oldest); return { json: async () => ({ ok: true, messages: [] }) }; }
+    return { json: async () => ({ ok: true }) };
+  };
+  const r = await runCommands({ root, config, env: { CREW_SLACK_TOKEN: "xoxb-t" }, fetchImpl, run: () => ({ ok: true }), now });
+  assert.equal(r.ran, 0);
+  assert.equal(asked, (now.getTime() - 30 * 60_000) / 1000);
+  assert.equal(readState(root).slackCommands.ts, String(now.getTime() / 1000));
 });
