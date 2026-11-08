@@ -46,7 +46,10 @@ function fakeWorld() {
       fs.mkdirSync(path.join(args[3], ".git"), { recursive: true });
       return { ok: true, stdout: "" };
     }
-    if (line.startsWith("git remote get-url")) return { ok: true, stdout: "git@github.com:jk/newproj.git\n" };
+    if (line.startsWith("git remote get-url")) return { ok: true, stdout: `git@github.com:${opts.cwd?.endsWith("other") ? "jk/other" : "jk/newproj"}.git\n` };
+    if (line.startsWith("git symbolic-ref --short refs/remotes/origin/HEAD")) return { ok: true, stdout: "origin/main\n" };
+    if (line.startsWith("git symbolic-ref --short -q HEAD")) return { ok: true, stdout: "main\n" };
+    if (line.startsWith("git rev-list --count")) return { ok: true, stdout: "0\n" };
     if (line.startsWith("gh api user")) return { ok: true, stdout: "jk\n" };
     if (line.startsWith("git diff --cached --quiet")) return { ok: false, code: 1, stdout: "" }; // something staged
     return { ok: true, stdout: "" };
@@ -77,7 +80,7 @@ test("project add: clone, config copied from the current project, setup commit, 
 
   // second run: everything already there
   const again = await addProject({ repo: "jk/newproj", dir, like, run: w.run, schedule: false, doctorFn: () => ({ checks: [] }) });
-  assert.match(again.steps.find((s) => s.step === "clone").outcome, /already/);
+  assert.match(again.steps.find((s) => s.step === "clone").outcome, /reused .*sync: up-to-date/);
   assert.match(again.steps.find((s) => s.step === "config").outcome, /already/);
 });
 
@@ -144,4 +147,16 @@ test("runCommands: first run listens from now; then runs owner commands and repl
   const quiet = await runCommands({ root, config, env, fetchImpl, run });
   assert.equal(quiet.ran, 0);
   assert.equal((await runCommands({ root, config: normalize({ ...base, slack: { channel: "C0123ABCD" } }), env })).skipped, "no slack.commanders");
+});
+
+test("project add: refuses a folder that holds another repo, or a non-empty non-repo folder", async () => {
+  const w = fakeWorld();
+  const parent = tmp("crew-proj-");
+  const other = path.join(parent, "other");
+  fs.mkdirSync(path.join(other, ".git"), { recursive: true });
+  await assert.rejects(addProject({ repo: "jk/newproj", dir: other, run: w.run }), /already holds jk\/other/);
+  const junk = path.join(parent, "junk");
+  fs.mkdirSync(junk);
+  fs.writeFileSync(path.join(junk, "a.txt"), "x");
+  await assert.rejects(addProject({ repo: "jk/newproj", dir: junk, run: w.run }), /not empty but is not a git repo/);
 });
