@@ -38,6 +38,7 @@ function world(opts = {}) {
     if (line.startsWith("gh api repos/jk/proj/issues/") && line.includes("/comments")) return ok("[]");
     if (line.startsWith("gh issue view") && line.includes("labels") && !line.includes("title")) return ok(JSON.stringify({ labels: [{ name: "ready" }] }));
     if (line.startsWith("gh issue view")) return ok(JSON.stringify(issues[0]));
+    if (line.startsWith("gh pr view") && line.includes("--json state") && opts.prState) return ok(JSON.stringify({ state: opts.prState }));
     if (line.startsWith("gh pr create")) return ok("https://github.com/jk/proj/pull/12\n");
     if (cmd === "gh") return ok("");
     if (line.startsWith("git worktree add")) {
@@ -206,6 +207,19 @@ test("codex findings after the last push trigger fix rounds up to caps.fix_round
   assert.equal(r4.action, "blocked");
   assert.equal(r4.rounds, 3);
   assert.equal(w4.streams.length, 0);
+});
+
+test("a fix round whose PR was closed while the agent worked pushes and comments nothing", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [] } } });
+  const reviews = [{ id: 77, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:00:00Z", body: "P1: null check missing" }];
+  const w = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews, prState: "CLOSED" });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "fix-dropped");
+  assert.equal(r.pr, 12);
+  assert.ok(!w.calls.some((c) => c.line.includes(" push ")));
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh pr comment")));
+  assert.deepEqual(loadLedger(root).issues[1].review_keys, ["r77"]);
 });
 
 test("test_cmd with ${root} is resolved to the main checkout for the agent", async () => {
