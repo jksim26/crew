@@ -205,6 +205,17 @@ test("test_cmd with ${root} is resolved to the main checkout for the agent", asy
   assert.ok(o.input.includes(`Test command: ${root}/.venv/bin/python -m pytest`));
 });
 
+test("testCmdBase lets the agent run single test files without opening the interpreter", async () => {
+  const { testCmdBase } = await import("../lib/dispatch.mjs");
+  assert.equal(testCmdBase('/r/.venv/bin/python -m pytest -q -m "not integration"'), "/r/.venv/bin/python -m pytest");
+  assert.equal(testCmdBase("npm test -- --watch"), "npm test");
+  assert.equal(testCmdBase("npm test"), "npm test");
+  assert.equal(testCmdBase("make test"), "make test");
+  const p = agentPermissions(normalize({ repo: "a/b", owner_login: "a", test_cmd: '/py -m pytest -q -m "not integration"' }));
+  assert.ok(p.allowed.includes("Bash(/py -m pytest:*)"));
+  assert.ok(!p.allowed.some((x) => x === "Bash(/py:*)"));
+});
+
 test("dry run changes nothing", async () => {
   const root = tmpRoot();
   const w = world();
