@@ -56,7 +56,9 @@ test("agent branch prefix must end in / and must not cover the default branch", 
 
 test("wip cap range", () => {
   assert.ok(validate({ ...base, wip_cap: 0 }).length);
-  assert.ok(validate({ ...base, wip_cap: 11 }).length);
+  assert.ok(validate({ ...base, wip_cap: 31 }).length);
+  assert.deepEqual(validate({ ...base, wip_cap: 20, parallel: 13 }), []);
+  assert.ok(validate({ ...base, parallel: 0 }).length);
   assert.deepEqual(validate({ ...base, wip_cap: 3 }), []);
 });
 

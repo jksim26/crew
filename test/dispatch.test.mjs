@@ -205,7 +205,7 @@ test("test_cmd with ${root} is resolved to the main checkout for the agent", asy
   const { args, o } = w.streams[0];
   assert.ok(args.includes(`Bash(${root}/.venv/bin/python -m pytest:*)`));
   assert.ok(o.input.includes(`(it runs: ${root}/.venv/bin/python -m pytest)`));
-  const runner = args.find((a) => /^Bash\(.*run-tests:\*\)$/.test(a));
+  const runner = args.find((a) => /^Bash\(.*run-tests(\.cmd)?:\*\)$/.test(a));
   assert.ok(runner, "the agent may call the test runner script by its plain path");
   assert.ok(args.some((a) => a.startsWith("PowerShell(") && a.includes("run-tests")));
 });
@@ -355,4 +355,26 @@ test("windows: crew's own test run really executes the runner script", { skip: p
   fs.rmSync(okRunner);
   const badRunner = writeTestRunner(dir, `"${process.execPath}" -e "process.exit(3)"`);
   assert.equal(runTests(run, badRunner, dir).passed, false);
+});
+
+test("parallel: several ready issues start at once, each in its own worktree, budget shared", async () => {
+  const issues = [1, 2, 3, 4].map((n) => ({ number: n, title: `Task ${n}`, body: "do it", labels: [{ name: "ready" }], createdAt: `2026-11-0${n}T00:00:00Z`, url: `u${n}` }));
+  const w = world({ issues });
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", parallel: 3, wip_cap: 10, caps: { daily_budget_usd: 30 } });
+  const r = await runDispatch({ root: tmpRoot(), config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "batch");
+  assert.deepEqual(r.results.map((x) => [x.action, x.issue]), [["built", 1], ["built", 2], ["built", 3]]);
+  assert.equal(w.streams.length, 3);
+  const wts = new Set(w.calls.filter((c) => c.line.startsWith("git worktree add")).map((c) => c.line.split(" ").slice(-2)[0]));
+  assert.equal(wts.size, 3);
+  for (const s of w.streams) assert.ok(Number(s.args[s.args.indexOf("--max-budget-usd") + 1]) <= 10);
+});
+
+test("parallel: the WIP cap still limits how many start", async () => {
+  const issues = [1, 2, 3].map((n) => ({ number: n, title: `Task ${n}`, body: "", labels: [{ name: "ready" }], createdAt: `2026-11-0${n}T00:00:00Z`, url: `u${n}` }));
+  const w = world({ issues, openPrs: [{ number: 50, headRefName: "agent/50-x", url: "u" }] });
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", parallel: 5, wip_cap: 3 });
+  const r = await runDispatch({ root: tmpRoot(), config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "batch");
+  assert.equal(r.results.length, 2);
 });
