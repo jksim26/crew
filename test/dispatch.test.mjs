@@ -36,7 +36,7 @@ function world(opts = {}) {
     if (line.startsWith("gh api repos/jk/proj/pulls/") && line.includes("/reviews")) return ok(JSON.stringify(opts.reviews ?? []));
     if (line.startsWith("gh api repos/jk/proj/pulls/") && line.includes("/comments")) return ok("[]");
     if (line.startsWith("gh api repos/jk/proj/issues/") && line.includes("/comments")) return ok("[]");
-    if (line.startsWith("gh issue view") && line.includes("labels")) return ok(JSON.stringify({ labels: [{ name: "ready" }] }));
+    if (line.startsWith("gh issue view") && line.includes("labels") && !line.includes("title")) return ok(JSON.stringify({ labels: [{ name: "ready" }] }));
     if (line.startsWith("gh issue view")) return ok(JSON.stringify(issues[0]));
     if (line.startsWith("gh pr create")) return ok("https://github.com/jk/proj/pull/12\n");
     if (cmd === "gh") return ok("");

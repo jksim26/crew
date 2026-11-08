@@ -10,7 +10,7 @@ team's memory lives in files and GitHub, not in long-running chats.
 | **Dispatcher** (a plain script) | Decides if there is work, runs dev under hard caps, pushes `agent/*`, opens the PR |
 | **Codex** | Reviews PRs; one automatic fix round, then the issue is `blocked` for you |
 | **You** | Mark issues `ready`, merge PRs, make the calls the brief asks for |
-| **Messenger** (e.g. a Grok routine) | Reads `STATUS.md` once a day and tells you |
+| **Slack** (optional) | A pinned board per project (ready / doing / in review / blocked / waiting for you) plus short news lines; any bot, e.g. Grok, can read it |
 
 Built for GitHub Free and a Claude subscription:
 
@@ -61,6 +61,8 @@ price; with this token they count against your plan's usage limits and nothing i
 | Something built | Open an issue, then label it `ready` yourself (only your label counts) |
 | See what dev would take next | `crew queue next` |
 | One dev run now | `crew dispatch` (or `--dry-run`) |
+| Refresh the Slack board now | `crew board` |
+| Name this machine | `crew machine set pc` |
 | Keep dev away while you work | `crew lease on` … `crew lease off` |
 | Close a session cleanly | `/crew:handoff` |
 | Import an existing checklist | `crew queue import backlog.md --section "Queue" --dry-run` |
@@ -71,16 +73,49 @@ price; with this token they count against your plan's usage limits and nothing i
 crew schedule install sync --at 06:30                     # fast-forward main before runners use it
 crew schedule install brief --at 19:00
 crew schedule install brief-weekly --at 18:00 --weekday 0
-crew schedule install dispatch --at 13:00,16:00,21:00      # or --every 60
+crew schedule install watch --every 10                     # dispatch when there is work + refresh the Slack board
 crew schedule status
-crew schedule remove dispatch
+crew schedule remove watch
 ```
+
+`watch` is the usual way to run dev. Every 10 minutes it does the plain checks (lock, lease,
+budget, WIP cap, queue). It wakes the model only when an issue is `ready` or a review needs a fix.
+It refreshes the Slack board when a label changed and posts one news line when something happened;
+the same line is not repeated within 6 hours. `dispatch --at ...` still works for fixed times.
 
 - **macOS:** a launchd user agent in `~/Library/LaunchAgents`.
 - **Windows:** a Task Scheduler task under `\crew\`, using S4U, Limited, `IgnoreNew` and an
   explicit execution limit.
 - **Logs:** `.crew/logs/<job>.log`.
 - **Preview first:** `--print` shows the file without installing it.
+
+## Slack (optional)
+
+GitHub labels stay the truth; Slack is the window. One free workspace can hold many projects, one
+channel each.
+
+1. Create a Slack app (api.slack.com/apps, "From scratch") with the bot scopes `chat:write`,
+   `pins:read` and `pins:write`, and install it to your workspace.
+2. Invite it to the project channel (`/invite @your-app`) and copy the channel ID (channel name,
+   then the bottom of the About tab).
+3. Add `"slack": {"channel": "C0123ABCD"}` to `.claude/crew.json`.
+4. Save the bot token on each machine that runs jobs: `crew token set --slack` (hidden prompt).
+5. `crew board` posts and pins the board; `watch` keeps it current. Briefs post a short version.
+
+`"board": false` or `"news": false` turns either half off.
+
+## Two machines: a main runner and helpers
+
+```json
+"machines": { "main": "pc", "helpers": ["mac"] }
+```
+
+Each machine names itself once with `crew machine set pc` (stored machine-locally, next to the
+token). Then `crew queue labels` creates a `pc` and a `mac` label.
+
+- **Unlabelled work** runs on the main machine.
+- **An issue labelled `mac`** runs only on the Mac.
+- **A machine with no name** takes no queued work, and `crew doctor` warns about it.
 
 ## What one `crew dispatch` run does
 
@@ -122,7 +157,9 @@ crew schedule remove dispatch
   "caps": { "max_turns": 60, "max_budget_usd": 5, "wall_min": 40, "idle_min": 10,
             "issue_budget_usd": 15, "issue_attempts": 2, "daily_budget_usd": 25 },
   "brief": { "sources": ["docs/log.md"], "deliver": "pr" },
-  "roles": ["trade", { "name": "ops", "memory": "docs/roles/ops.md" }]
+  "roles": ["trade", { "name": "ops", "memory": "docs/roles/ops.md" }],
+  "slack": { "channel": "C0123ABCD", "board": true, "news": true },
+  "machines": { "main": "pc", "helpers": ["mac"] }
 }
 ```
 
