@@ -170,7 +170,7 @@ test("an issue whose attempts are used up is skipped", async () => {
   assert.match(r.skipped[0].reason, /attempts used/);
 });
 
-test("codex findings after the last push trigger one fix round, then block", async () => {
+test("codex findings after the last push trigger fix rounds up to caps.fix_rounds, then block", async () => {
   const root = tmpRoot();
   saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [] } } });
   const reviews = [{ id: 77, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:00:00Z", body: "P1: null check missing" }];
@@ -190,11 +190,22 @@ test("codex findings after the last push trigger one fix round, then block", asy
   saveLedger(root, l);
   assert.equal((await runDispatch({ root, config, run: w2.run, runStream: w2.runStream, now: NOW })).action, "idle");
 
-  // A new finding after the fix round -> blocked for the owner.
-  const w3 = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews: [...reviews, { id: 78, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:30:00Z", body: "P1: still wrong" }] });
-  const r3 = await runDispatch({ root, config, run: w3.run, runStream: w3.runStream, now: NOW });
-  assert.equal(r3.action, "blocked");
-  assert.equal(w3.streams.length, 0);
+  // A new finding after round 1 -> round 2 (the loop), not blocked yet.
+  const more = [...reviews, { id: 78, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:30:00Z", body: "P1: still wrong" }];
+  const w3 = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews: more });
+  assert.equal((await runDispatch({ root, config, run: w3.run, runStream: w3.runStream, now: NOW })).action, "fixed");
+  assert.equal(loadLedger(root).issues[1].fix_rounds, 2);
+
+  // Rounds used up (cap 3 by default) -> a new finding blocks for the owner, no model run.
+  l = loadLedger(root);
+  l.issues[1].fix_rounds = 3;
+  l.issues[1].last_push_at = "2026-11-08T09:40:00Z";
+  saveLedger(root, l);
+  const w4 = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews: [...more, { id: 79, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:45:00Z", body: "P2: again" }] });
+  const r4 = await runDispatch({ root, config, run: w4.run, runStream: w4.runStream, now: NOW });
+  assert.equal(r4.action, "blocked");
+  assert.equal(r4.rounds, 3);
+  assert.equal(w4.streams.length, 0);
 });
 
 test("test_cmd with ${root} is resolved to the main checkout for the agent", async () => {
