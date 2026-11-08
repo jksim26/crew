@@ -95,6 +95,22 @@ test("commands: per-OS objects and ${root} substitution", async () => {
   assert.ok(validate({ ...base, test_cmd: 5 }).length);
 });
 
+test("mainCheckout follows a linked worktree back to the main checkout", async () => {
+  const { mainCheckout } = await import("../lib/config.mjs");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "crew-wt-"));
+  const main = path.join(base, "main");
+  fs.mkdirSync(path.join(main, ".git", "worktrees", "wt"), { recursive: true });
+  const wt = path.join(base, "wt");
+  fs.mkdirSync(wt);
+  fs.writeFileSync(path.join(wt, ".git"), `gitdir: ${path.join(main, ".git", "worktrees", "wt")}\n`);
+  assert.equal(mainCheckout(wt), main);
+  assert.equal(mainCheckout(main), main);
+  assert.equal(mainCheckout(path.join(base, "nope")), path.join(base, "nope"));
+});
+
 test("commands must be non-empty strings or null", () => {
   assert.ok(validate({ ...base, test_cmd: "" }).length);
   assert.deepEqual(validate({ ...base, test_cmd: null, protected_paths_cmd: "python check.py" }), []);
