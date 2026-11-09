@@ -8,7 +8,7 @@ team's memory lives in files and GitHub, not in long-running chats.
 | **PM** (reads only) | Writes a daily brief in plain language plus a 5-line `STATUS.md`; a Sunday week in review |
 | **Dev** (headless) | Takes one `ready` GitHub issue, builds it in a throwaway worktree, commits locally, exits |
 | **Dispatcher** (a plain script) | Decides if there is work, runs dev under hard caps, pushes `agent/*`, opens the PR |
-| **Codex** | Reviews PRs; up to 3 automatic fix rounds (`caps.fix_rounds`), then the issue is `blocked` for you |
+| **Codex** | Reviews PRs; up to 3 automatic fix rounds (`caps.fix_rounds`), then one automatic rebuild that starts from the open findings; only then the issue is `needs-jk` for you |
 | **You** | Mark issues `ready`, merge PRs, make the calls the brief asks for |
 | **Slack** (optional) | A pinned board per project (ready / doing / in review / blocked / waiting for you) plus short news lines; any bot, e.g. Grok, can read it |
 
@@ -188,27 +188,47 @@ token). Then `crew queue labels` creates a `pc` and a `mac` label.
 
 ## What one `crew dispatch` run does
 
-1. **Plain checks, with no model call:** the lock, your lease, the daily budget, the WIP cap
-   (open `agent/*` PRs), and the queue.
-2. **Fix rounds first:** if Codex left new findings on an agent PR since the last push, dev gets one
-   fix round. A second set of findings moves the issue to `blocked`.
-3. **Otherwise the next issue:** the oldest `ready` issue (or the lowest `priority:N`) whose `ready`
-   label was applied by `owner_login`.
-4. **Login check:** a canary call confirms the Claude login works.
-5. **The dev run:** in a fresh worktree off `origin/<default>`:
+The loop is built to need you as little as possible. `needs-jk` is your only queue; crew leaves
+an issue there alone until you relabel it (`in-review` resumes its PR, `ready` rebuilds it).
+
+1. **Plain checks, with no model call:** the lock, your lease, the daily budget, and the queue.
+   Agent PRs merged or closed are reconciled; a green, reviewed, unprotected PR is merged
+   (`merge: "codex-clean"`), bound to the head it checked (`--match-head-commit`).
+2. **Fix rounds first.** What counts as a finding on an agent PR since the last push:
+   - Codex's findings (a P3 note is recorded and never starts a round);
+   - the project's own PR gate (`gate_comment_prefix`, e.g. `"pr-gate"`): its effective
+     `NOT merged` decision, with the P1/P2 lines of that head's reports (PRE-EXISTING, ADVISORY
+     and CLOSED lines excluded). A gate that reserves the PR for the owner (`never-auto-merge`), or
+     blocks with nothing crew can act on, puts the issue on `needs-jk`;
+   - failing CI checks on the PR's head, and a draft crew itself opened because its run fell short
+     (one repair round per head; a repaired draft is marked ready for review).
+   Build attempts do not limit fix rounds. When `caps.fix_rounds` is used up, crew closes the PR and
+   queues one fresh build (on a new `-r<n>` branch) whose prompt carries the unresolved findings;
+   with no attempts left the issue goes to `needs-jk` with the findings.
+3. **Conflict sync.** An agent PR that conflicts with the default branch is merged up to date.
+   Conflicts only in `PROGRESS.md` / `LEARNINGS.md` are union-merged with no model; real conflicts
+   get one model merge round. `caps.sync_rounds` (default 2) per PR, then `needs-jk`.
+4. **Otherwise the next issues:** up to `parallel` `ready` issues (lowest `priority:N`, then oldest)
+   whose `ready` label was applied by `owner_login`, within the WIP cap. PRs on `needs-jk` do not
+   count toward WIP.
+5. **Login check:** a canary call confirms the Claude login works.
+6. **The dev run:** in a fresh worktree off `origin/<default>`:
    - Caps: `--max-turns`, `--max-budget-usd`, a wall-clock limit and an idle limit (SIGINT, then
      SIGTERM).
    - The agent can edit, test and `git commit`. It cannot push, run `gh`, use curl, or fetch the
      web.
    - A `pre-push` hook refuses anything outside `agent/*`.
-6. **After the run, the dispatcher:**
+7. **After the run, the dispatcher:**
    - appends to `PROGRESS.md` and `LEARNINGS.md`
    - checks the diff against the protected paths
-   - pushes the branch and opens the PR. It's a draft if a protected path changed, the tests
-     failed, the work is partial, or the run hit a cap.
+   - pushes the branch (never a force push) and opens the PR. It's a draft if a protected path
+     changed (with `protected_draft`), the tests failed, the work is partial, or the run hit a cap.
    - comments `@codex review`
    - labels the issue `in-review`
-7. **Bookkeeping:** cost and attempts go to `.crew/ledger.json`. Per-issue budgets and attempts
+8. **Crew's own failures** (git, gh, budget) before anything is published are retried
+   automatically, up to `caps.infra_retries` (default 2) per issue, without using an attempt. Once a
+   PR is open or commented, nothing is redone.
+9. **Bookkeeping:** cost, attempts, rounds and carried findings go to `.crew/ledger.json`, and
    carry across restarts.
 
 ## Project config: `.claude/crew.json`
