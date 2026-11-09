@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runDispatch, slugify, issueFromBranch, prePushHook, agentEnv, agentPermissions, buildTaskPrompt, protectedHits, codexFindings, gateFeedback } from "../lib/dispatch.mjs";
+import { buildBranch } from "../lib/dispatch.mjs";
+import { runDispatch, slugify, issueFromBranch, prePushHook, agentEnv, agentPermissions, buildTaskPrompt, protectedHits, codexFindings, gateFeedback, retryIssues } from "../lib/dispatch.mjs";
 import { loadLedger, saveLedger, acquireLock, takeLease } from "../lib/state.mjs";
 import { normalize } from "../lib/config.mjs";
 import { runStreaming } from "../lib/exec.mjs";
@@ -627,4 +628,32 @@ test("gitWhy keeps the reason, not the 'To <url>' line", async () => {
   assert.match(why, /rejected.*fetch first.*failed to push/);
   assert.doesNotMatch(why, /^To /);
   assert.equal(gitWhy({ code: 128, stderr: "" }), "exit 128");
+});
+
+test("crew queue retry: resets an issue's counters and relabels it by whether its PR is open", () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: { "2026-11-08": 40 }, issues: {
+    1: { cost: 16, attempts: 2, fix_rounds: 3, pr: 12, branch: "agent/1-x", last_push_at: "2026-11-08T08:00:00Z", review_keys: ["r1"] },
+    2: { cost: 3, attempts: 2, fix_rounds: 0, pr: 13, branch: "agent/2-y", last_push_at: "2026-11-08T08:00:00Z", review_keys: [] },
+  } });
+  const calls = [];
+  const run = (cmd, args) => {
+    const l = `${cmd} ${args.join(" ")}`;
+    calls.push(l);
+    if (l.startsWith("gh pr view 12")) return { ok: true, stdout: JSON.stringify({ state: "OPEN" }) };
+    if (l.startsWith("gh pr view 13")) return { ok: true, stdout: JSON.stringify({ state: "CLOSED" }) };
+    if (l.startsWith("gh issue view")) return { ok: true, stdout: JSON.stringify({ labels: [{ name: "blocked" }] }) };
+    return { ok: true, stdout: "" };
+  };
+  const r = retryIssues({ root, config, numbers: [1, 2], run });
+  assert.deepEqual(r, [{ issue: 1, state: "in-review", pr: 12 }, { issue: 2, state: "ready", pr: null }]);
+  const l = loadLedger(root);
+  assert.deepEqual([l.issues[1].attempts, l.issues[1].fix_rounds, l.issues[1].cost, l.issues[1].review_keys], [0, 0, 0, []]);
+  assert.equal(l.issues[1].last_push_at, "2026-11-08T08:00:00Z");
+  assert.equal(l.issues[2].pr, null);
+  assert.equal(l.days["2026-11-08"], 40, "the day's real spend is untouched");
+  assert.ok(calls.some((c) => c.startsWith("gh issue edit 1 --repo jk/proj --add-label in-review --remove-label blocked")));
+  assert.ok(calls.some((c) => c.startsWith("gh issue edit 2 --repo jk/proj --add-label ready --remove-label blocked")));
+  // Issue 2 was built before: its rebuild gets a fresh branch name.
+  assert.equal(buildBranch("agent/", { number: 2, title: "Y" }, l.issues[2]), "agent/2-y-r2");
 });
