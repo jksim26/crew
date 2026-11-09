@@ -13,6 +13,7 @@ import { validSlackToken, saveSlackToken } from "../lib/token.mjs";
 
 const base = { repo: "jk/proj", owner_login: "jk" };
 const config = normalize({ ...base, slack: { channel: "C0123ABCD" }, machines: { main: "pc", helpers: ["mac"] } });
+const cfgC = normalize({ ...base, slack: { channel: "C0123ABCD", canvas: true }, machines: { main: "pc", helpers: ["mac"] } });
 const tmpRoot = () => fs.mkdtempSync(path.join(os.tmpdir(), "crew-slack-"));
 const tmpEnv = () => ({ XDG_CONFIG_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "crew-cfg-")), APPDATA: fs.mkdtempSync(path.join(os.tmpdir(), "crew-cfg-")), CREW_SLACK_TOKEN: "xoxb-test" });
 
@@ -101,6 +102,7 @@ test("syncBoard: posts and pins once, then updates in place, and skips when unch
   const root = tmpRoot();
   const env = tmpEnv();
   const s = fakeSlack();
+  const config = cfgC;
   const r1 = await syncBoard({ root, config, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: new Date("2026-11-08T12:00:00Z") });
   assert.equal(r1.action, "posted");
   assert.deepEqual(s.calls.map((c) => c.method), ["conversations.canvases.create", "pins.list", "chat.postMessage", "pins.add"]);
@@ -123,7 +125,7 @@ test("syncBoard: posts and pins once, then updates in place, and skips when unch
   assert.equal(r3.canvas.action, "updated");
 });
 
-test("board canvas: markdown rows, escaped titles, and slack.canvas false turns it off", async () => {
+test("board canvas: markdown rows, escaped titles, and off unless slack.canvas is true", async () => {
   const cols = collectBoard(config, ghRun(issues));
   const workers = [{ issue: 2, kind: "build", pr: 7, phase: "agent working", started: "2026-11-08T11:30:00Z", cost: 1.5, title: "Doing *one*" }];
   const md = renderBoardMarkdown(config, cols, new Date("2026-11-08T12:00:00Z"), workers);
@@ -133,7 +135,7 @@ test("board canvas: markdown rows, escaped titles, and slack.canvas false turns 
   assert.match(md, /- \[#1\]\(https:\/\/github.com\/jk\/proj\/issues\/1\) Fix \\<it\\>/);
   assert.match(md, /## 🔴 Blocked \(0\)[^\n]*\n- none/);
 
-  const off = normalize({ ...base, slack: { channel: "C0123ABCD", canvas: false } });
+  const off = config; // the default: no board canvas
   const s = fakeSlack();
   const r = await syncBoard({ root: tmpRoot(), config: off, run: ghRun(issues), env: tmpEnv(), fetchImpl: s.fetchImpl });
   assert.equal(r.canvas, undefined);
@@ -141,6 +143,7 @@ test("board canvas: markdown rows, escaped titles, and slack.canvas false turns 
 });
 
 test("board canvas: a channel canvas crew did not make is never replaced; a refusal waits, the message still goes", async () => {
+  const config = cfgC;
   const root = tmpRoot();
   const env = tmpEnv();
   const s = fakeSlack({ canvas: { "conversations.canvases.create": { ok: false, error: "channel_canvas_already_exists" } } });
@@ -192,7 +195,10 @@ test("project canvases: due runs publish the command's markdown; failures keep t
   const alerts = () => s.calls.slice(n).filter((x) => x.method === "chat.postMessage");
   assert.equal(alerts().length, 1);
   assert.match(alerts()[0].body.text, /Alpaca account\* canvas could not refresh/);
-  assert.ok(!s.calls.slice(n).some((x) => /canvas/.test(x.method)));
+  // The canvas keeps the last good copy, labelled stale inside the canvas itself.
+  const stale = s.calls.slice(n).find((x) => x.method === "canvases.edit").body.changes[0].document_content.markdown;
+  assert.match(stale, /^> ⚠️ \*\*Stale:\*\* this section could not refresh; it shows the copy from .*broker 500/);
+  assert.match(stale, /# Account\nequity 10,000$/);
   await refreshCanvases({ root, config: c, run, env, fetchImpl: s.fetchImpl, now: at(20), machine: "pc" });
   assert.equal(alerts().length, 1); // not repeated while it stays broken
 
@@ -211,6 +217,77 @@ test("project canvas without its own channel is a standalone tab in the project 
   assert.deepEqual(s.calls.map((x) => x.method), ["canvases.create", "canvases.access.set"]);
   assert.equal(s.calls[0].body.title, "Alpaca account");
   assert.deepEqual(s.calls[1].body, { canvas_id: "F1", access_level: "read", channel_ids: ["C0123ABCD"] });
+});
+
+test("daily board: the first sync after board_daily_at posts a fresh board, unpins and relabels the old one", async () => {
+  const root = tmpRoot();
+  const env = tmpEnv();
+  const c = normalize({ ...base, slack: { channel: "C0123ABCD", board_daily_at: "08:00" } });
+  const s = fakeSlack();
+  const local = (d, h, m) => new Date(2026, 10, d, h, m); // machine-local clock, like the PC
+  const r1 = await syncBoard({ root, config: c, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: local(9, 18, 0) });
+  assert.equal(r1.action, "posted");
+  assert.equal(readState(root).slackBoard.day, "2026-11-09");
+  // Same day, nothing changed: skipped. Next day before 08:00: still skipped.
+  assert.equal((await syncBoard({ root, config: c, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: local(9, 23, 0) })).action, "skipped");
+  assert.equal((await syncBoard({ root, config: c, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: local(10, 7, 50) })).action, "skipped");
+  // Next day at 08:00, unchanged board: posted fresh anyway.
+  const n = s.calls.length;
+  const r2 = await syncBoard({ root, config: c, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: local(10, 8, 0) });
+  assert.equal(r2.action, "reposted");
+  assert.deepEqual(s.calls.slice(n).map((x) => x.method), ["chat.postMessage", "pins.add", "chat.getPermalink", "pins.remove", "chat.update"]);
+  assert.equal(s.calls.at(-2).body.timestamp, "100.1");
+  assert.equal(s.calls.at(-1).body.ts, "100.1");
+  assert.ok(!s.calls.at(-1).body.text.startsWith(boardHeader(c))); // findPinnedBoard can never pick the old one
+  assert.equal(readState(root).slackBoard.ts, "100.2");
+  assert.equal(readState(root).slackBoard.day, "2026-11-10");
+  // Once a day only: later changes that day update the new board in place.
+  const r3 = await syncBoard({ root, config: c, run: ghRun(issues.slice(1)), env, fetchImpl: s.fetchImpl, now: local(10, 12, 0) });
+  assert.equal(r3.action, "updated");
+  assert.equal(s.calls.at(-1).body.ts, "100.2");
+  assert.ok(validate({ ...base, slack: { channel: "C0123ABCD", board_daily_at: "8am" } }).some((p) => /board_daily_at/.test(p)));
+});
+
+test("canvas parts: a repo file and a command share one canvas; a failing part keeps its last copy, the others still update", async () => {
+  const root = tmpRoot();
+  const env = tmpEnv();
+  // The file comes from origin/main (git show), never from the checkout's working copy.
+  let onMain = "---\ntitle: roadmap\n---\n# Roadmap\n## Now\n- Rust P1";
+  fs.mkdirSync(path.join(root, "wiki"), { recursive: true });
+  fs.writeFileSync(path.join(root, "wiki/roadmap.md"), "# LOCAL EDIT, never published");
+  const c = normalize({ ...base, slack: { channel: "C0123ABCD", canvases: [{ key: "live", title: "Live", every_min: 10, channel: "C0123ABCD",
+    parts: [{ command: ["py", "acct.py"] }, { file: "wiki/roadmap.md" }] }] } });
+  assert.deepEqual(validate({ ...base, slack: { channel: "C0123ABCD", canvases: [{ key: "a", title: "A", every_min: 10, command: ["x"], parts: [{ file: "a.md" }] }] } }).filter((p) => /exactly one/.test(p)).length, 1);
+  assert.ok(validate({ ...base, slack: { channel: "C0123ABCD", canvases: [{ key: "a", title: "A", every_min: 10, parts: [{ file: "../x.md" }] }] } }).some((p) => /parts/.test(p)));
+  assert.ok(validate({ ...base, slack: { channel: "C0123ABCD", canvas: true, canvases: [{ key: "a", title: "A", every_min: 10, channel: "C0123ABCD", command: ["x"] }] } }).some((p) => /already gives the board/.test(p)));
+  const s = fakeSlack();
+  let ok = true;
+  const gitCalls = [];
+  const run = (cmd, args) => {
+    if (cmd === "git") {
+      gitCalls.push(args.join(" "));
+      return args[0] === "show" ? { ok: true, code: 0, stdout: onMain } : { ok: true, code: 0, stdout: "" };
+    }
+    return ok ? { ok: true, code: 0, stdout: "# Account\nequity 1" } : { ok: false, code: 2, stdout: "", stderr: "broker down" };
+  };
+  const t0 = new Date("2026-11-08T12:00:00Z");
+  const at = (min) => new Date(t0.getTime() + min * 60_000);
+  const md = () => s.calls.filter((x) => /canvas/.test(x.method)).at(-1).body;
+  const foot = "\n\n_Published from wiki/roadmap.md on main. Edit it by PR; edits made here are overwritten._";
+
+  let r = await refreshCanvases({ root, config: c, run, env, fetchImpl: s.fetchImpl, now: t0, machine: "pc" });
+  assert.equal(r[0].action, "posted");
+  assert.deepEqual(gitCalls, ["fetch --quiet origin +refs/heads/main:refs/remotes/origin/main", "show origin/main:wiki/roadmap.md"]);
+  assert.equal(md().document_content.markdown, `# Account\nequity 1\n\n---\n\n# Roadmap\n## Now\n- Rust P1${foot}`);
+
+  ok = false;
+  onMain = "# Roadmap\n## Now\n- Rust P2";
+  r = await refreshCanvases({ root, config: c, run, env, fetchImpl: s.fetchImpl, now: at(10), machine: "pc" });
+  assert.equal(r[0].action, "error");
+  assert.equal(r[0].published, "updated");
+  const now2 = md().changes[0].document_content.markdown;
+  assert.match(now2, /^> ⚠️ \*\*Stale:\*\*.*broker down.*\n\n# Account\nequity 1\n\n---\n\n# Roadmap\n## Now\n- Rust P2/s);
+  assert.match(s.calls.filter((x) => x.method === "chat.postMessage").at(-1).body.text, /Live\* canvas could not refresh.*broker down/);
 });
 
 test("watch: project canvases refresh before dispatch", async () => {

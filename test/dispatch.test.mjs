@@ -752,14 +752,23 @@ test("capped test runner: passes args through, and ends a run that outlasts the 
   const { spawnSync } = await import("node:child_process");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-cap-"));
   const node = JSON.stringify(process.execPath);
-  const quick = writeTestRunner(path.join(dir, "a"), `${node} -e "console.log(process.argv.slice(1).join('|'))"`, process.platform, { capMin: 1 });
+  const quick = writeTestRunner(path.join(dir, "a"), `${node} -e "console.log(process.argv.slice(1).join('|'))" --`, process.platform, { capMin: 1 });
   const win = process.platform === "win32";
   const ok = spawnSync(quick, ["tests/test_a.py", "-k", "x"], { encoding: "utf8", shell: win });
   assert.equal(ok.status, 0);
   assert.match(ok.stdout, /tests\/test_a\.py\|-k\|x/);
+  // A selector with no path is a narrowed run too.
+  for (const args of [["-k", "canvas"], ["-k=canvas"], ["-mslow"], ["-q", "--maxfail", "1", "tests/t.py::test_x"]])
+    assert.equal(spawnSync(quick, args, { encoding: "utf8", shell: win }).status, 0, args.join(" "));
   const slow = writeTestRunner(path.join(dir, "b"), `${node} -e "setTimeout(() => {}, 20000)"`, process.platform, { capMin: 0.02 });
+  // The whole suite (no test named) is refused at once.
+  for (const args of [[], ["-q"], ["-q", "-x"], ["--maxfail", "1"], ["--color", "yes", "-q"], ["-k", ""]]) {
+    const all = spawnSync(slow, args, { encoding: "utf8", shell: win });
+    assert.equal(all.status, 2);
+    assert.match(all.stdout, /name the tests that cover your change/);
+  }
   const t0 = Date.now();
-  const r = spawnSync(slow, [], { encoding: "utf8", shell: win });
+  const r = spawnSync(slow, ["tests/test_b.py"], { encoding: "utf8", shell: win });
   assert.equal(r.status, 124);
   assert.match(r.stdout, /stopped after 0\.02 minutes\. Run fewer tests/);
   assert.ok(Date.now() - t0 < 10_000, "the cap ended the run, not the command");

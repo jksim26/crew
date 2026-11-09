@@ -127,36 +127,47 @@ channel each.
 
 `"board": false` or `"news": false` turns either half off.
 
-### Canvases
+### A fresh board every morning
 
-With the extra bot scope `canvases:write` (add it, then reinstall the app), the board is also kept as
-the **channel canvas** (the tab at the top of the channel), as markdown with one heading per column.
-It changes when the pinned message changes. Crew only replaces a canvas it made: if the channel
-already has a canvas, crew logs the refusal and leaves it alone. Delete that canvas, or set
-`"canvas": false` to stop trying. A Slack refusal such as a missing scope is retried every 6 hours.
+`"board_daily_at": "08:00"` (the runner machine's local time) posts the board fresh once a day, so
+it sits near the bottom of the channel instead of a day's scroll up. The previous board is unpinned
+and becomes one line linking to the new one. For the rest of the day the new board updates in place.
 
-A project can add its own canvases, each filled from a command's stdout (markdown):
+### Canvases (needs the `canvases:write` scope; add it, then reinstall the app)
+
+On the free plan a channel has ONE canvas, so a project puts everything it wants there into one
+canvas, built from **parts**: each part is a command's stdout or a repo file, with a divider between
+them.
 
 ```json
 "slack": {
   "channel": "C0123ABCD",
+  "board_daily_at": "08:00",
   "canvases": [
-    { "key": "account", "title": "Alpaca account", "command": [".venv\\Scripts\\python.exe", "scripts/account_canvas.py"],
-      "every_min": 10, "channel": "C0456EFGH", "machine": "pc" }
+    { "key": "live", "title": "Live", "channel": "C0123ABCD", "machine": "pc", "every_min": 10,
+      "parts": [
+        { "command": [".venv\\Scripts\\python.exe", "scripts/account_canvas.py"] },
+        { "file": "wiki/system/roadmap.md" }
+      ] }
   ]
 }
 ```
 
-- `watch` runs each due command **before** dispatch, so a long dev batch never holds it up. Ticks
-  come every 10 minutes, so `every_min` below 10 still means about every 10 minutes.
-- `channel` puts it in that channel's own canvas. This works on the free plan, which allows one
-  canvas per channel. Without `channel`, it becomes a standalone canvas tabbed in the project
-  channel and set to read-only there. That needs a paid Slack plan.
-- `machine` runs it only on that crew machine, for a command that needs that machine's keys.
-- A command that fails, times out (`timeout_sec`, default 120) or prints nothing publishes nothing,
-  so the canvas keeps its last good copy. One line goes to the project channel when it starts
-  failing, and one when it recovers.
-- `crew canvas [--force]` refreshes them now.
+- `watch` refreshes due canvases **before** dispatch, so a long dev batch never holds them up.
+  Ticks come every 10 minutes, so `every_min` below 10 still means about every 10 minutes.
+- A `file` part is read as **committed on the default branch** (`git show origin/main:<file>`,
+  fetched first), never from local edits on the runner. YAML front matter is dropped, and a footer
+  says to edit it by PR, because edits made in Slack are overwritten.
+- A part that fails (non-zero exit, timeout after `timeout_sec` (default 120), or no output) shows
+  its last good copy under a **Stale** line inside the canvas, while the other parts keep updating.
+  One line goes to the project channel when a canvas starts failing, and one when it recovers.
+- `channel` uses that channel's own canvas, which works on the free plan. Without `channel`, crew
+  makes a standalone canvas tabbed in the project channel, which needs a paid plan. Crew only
+  replaces a canvas it made itself.
+- `machine` runs it only on that crew machine, for commands that need that machine's keys.
+- `"command": [...]` instead of `parts` is a one-part shorthand. `crew canvas [--force]` refreshes now.
+- `"canvas": true` puts the crew board itself in the channel canvas instead. It can't be combined
+  with a `canvases` entry for the same channel.
 
 ## A new project in one command
 
