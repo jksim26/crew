@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { normalize, validate, machineNames } from "../lib/config.mjs";
 import { routeIssue, setMachine, thisMachine } from "../lib/machine.mjs";
-import { mrkdwn, collectBoard, renderBoard, syncBoard, postNews, briefNews, dispatchNews, boardHeader } from "../lib/slack.mjs";
+import { mrkdwn, collectBoard, renderBoard, renderBoardMarkdown, syncBoard, publishCanvas, refreshCanvases, postNews, briefNews, dispatchNews, boardHeader } from "../lib/slack.mjs";
 import { runWatch } from "../lib/watch.mjs";
 import { readState } from "../lib/brief.mjs";
 import { ensureLabels } from "../lib/queue.mjs";
@@ -80,13 +80,15 @@ test("board: grouped by state (furthest along wins), machine shown, header fixed
   assert.doesNotMatch(text, /Not crew/);
 });
 
-function fakeSlack({ pinned = [], failUpdate = null } = {}) {
+function fakeSlack({ pinned = [], failUpdate = null, canvas = {} } = {}) {
   const calls = [];
   let n = 0;
   const fetchImpl = async (url, o) => {
     const method = url.split("/").pop();
-    const body = Object.fromEntries(new URLSearchParams(o.body));
+    const body = /json/.test(o.headers["Content-Type"]) ? JSON.parse(o.body) : Object.fromEntries(new URLSearchParams(o.body));
     calls.push({ method, body, auth: o.headers.Authorization });
+    if (canvas[method]) return { json: async () => (typeof canvas[method] === "function" ? canvas[method](body) : canvas[method]) };
+    if (method === "conversations.canvases.create" || method === "canvases.create") return { json: async () => ({ ok: true, canvas_id: `F${calls.length}` }) };
     if (method === "pins.list") return { json: async () => ({ ok: true, items: pinned }) };
     if (method === "chat.update" && failUpdate) return { json: async () => ({ ok: false, error: failUpdate }) };
     if (method === "chat.postMessage") return { json: async () => ({ ok: true, ts: `100.${++n}` }) };
@@ -99,10 +101,10 @@ test("syncBoard: posts and pins once, then updates in place, and skips when unch
   const root = tmpRoot();
   const env = tmpEnv();
   const s = fakeSlack();
-  const r1 = await syncBoard({ root, config, run: ghRun(issues), env, fetchImpl: s.fetchImpl });
+  const r1 = await syncBoard({ root, config, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: new Date("2026-11-08T12:00:00Z") });
   assert.equal(r1.action, "posted");
-  assert.deepEqual(s.calls.map((c) => c.method), ["pins.list", "chat.postMessage", "pins.add"]);
-  assert.equal(s.calls[1].auth, "Bearer xoxb-test");
+  assert.deepEqual(s.calls.map((c) => c.method), ["conversations.canvases.create", "pins.list", "chat.postMessage", "pins.add"]);
+  assert.equal(s.calls[2].auth, "Bearer xoxb-test");
   assert.equal(readState(root).slackBoard.ts, "100.1");
 
   const r2 = await syncBoard({ root, config, run: ghRun(issues), env, fetchImpl: s.fetchImpl });
@@ -112,6 +114,116 @@ test("syncBoard: posts and pins once, then updates in place, and skips when unch
   assert.equal(r3.action, "updated");
   assert.equal(s.calls.at(-1).method, "chat.update");
   assert.equal(s.calls.at(-1).body.ts, "100.1");
+  // The canvas followed the same change, edited in place as markdown.
+  const edit = s.calls.find((c) => c.method === "canvases.edit");
+  assert.equal(edit.body.canvas_id, "F1");
+  assert.equal(edit.body.changes[0].operation, "replace");
+  assert.equal(edit.body.changes[0].document_content.type, "markdown");
+  assert.match(edit.body.changes[0].document_content.markdown, /^# crew board · jk\/proj/);
+  assert.equal(r3.canvas.action, "updated");
+});
+
+test("board canvas: markdown rows, escaped titles, and slack.canvas false turns it off", async () => {
+  const cols = collectBoard(config, ghRun(issues));
+  const workers = [{ issue: 2, kind: "build", pr: 7, phase: "agent working", started: "2026-11-08T11:30:00Z", cost: 1.5, title: "Doing *one*" }];
+  const md = renderBoardMarkdown(config, cols, new Date("2026-11-08T12:00:00Z"), workers);
+  assert.match(md, /## ⚙️ Workers \(1\/1\)/);
+  assert.match(md, /- \[#2\]\(https:\/\/github.com\/jk\/proj\/issues\/2\) build · \[PR #7\]\(https:\/\/github.com\/jk\/proj\/pull\/7\) · agent working · 30m · \$1\.50 · Doing \\\*one\\\*/);
+  assert.match(md, /## 🟢 Ready \(2\)/);
+  assert.match(md, /- \[#1\]\(https:\/\/github.com\/jk\/proj\/issues\/1\) Fix \\<it\\>/);
+  assert.match(md, /## 🔴 Blocked \(0\)[^\n]*\n- none/);
+
+  const off = normalize({ ...base, slack: { channel: "C0123ABCD", canvas: false } });
+  const s = fakeSlack();
+  const r = await syncBoard({ root: tmpRoot(), config: off, run: ghRun(issues), env: tmpEnv(), fetchImpl: s.fetchImpl });
+  assert.equal(r.canvas, undefined);
+  assert.ok(!s.calls.some((c) => /canvas/.test(c.method)));
+});
+
+test("board canvas: a channel canvas crew did not make is never replaced; a refusal waits, the message still goes", async () => {
+  const root = tmpRoot();
+  const env = tmpEnv();
+  const s = fakeSlack({ canvas: { "conversations.canvases.create": { ok: false, error: "channel_canvas_already_exists" } } });
+  const t0 = new Date("2026-11-08T12:00:00Z");
+  const r = await syncBoard({ root, config, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: t0 });
+  assert.equal(r.action, "posted");
+  assert.equal(r.canvas.action, "error");
+  assert.ok(!s.calls.some((c) => c.method === "canvases.edit" || c.method === "canvases.create"));
+  assert.equal(readState(root).slackCanvases.board.error, "channel_canvas_already_exists");
+  // Within the retry wait the canvas is not tried again, even when the board changes.
+  const n = s.calls.length;
+  await syncBoard({ root, config, run: ghRun(issues.slice(1)), env, fetchImpl: s.fetchImpl, now: new Date(t0.getTime() + 3600_000) });
+  assert.ok(!s.calls.slice(n).some((c) => /canvas/.test(c.method)));
+  // A network failure (no Slack code) is retried on the next tick.
+  const net = async () => { throw new Error("fetch failed"); };
+  const r2 = await publishCanvas({ root: tmpRoot(), key: "board", channel: "C0123ABCD", title: "t", markdown: "x", hash: "h", token: "xoxb-test", fetchImpl: net, now: t0 });
+  assert.equal(r2.action, "error");
+});
+
+test("project canvases: due runs publish the command's markdown; failures keep the last copy and alert once", async () => {
+  const root = tmpRoot();
+  const env = tmpEnv();
+  const c = normalize({ ...base, slack: { channel: "C0123ABCD", canvases: [{ key: "account", title: "Alpaca account", command: ["py", "scripts/a.py"], every_min: 10, channel: "C0ACCOUNT1", machine: "pc" }] } });
+  assert.deepEqual(validate({ ...base, slack: { channel: "C0123ABCD", canvases: [{ key: "board", title: "", command: "py", every_min: 0, colour: 1 }] } }).filter((p) => /canvases/.test(p)).length, 5);
+  const s = fakeSlack();
+  let out = "# Account\nequity 10,000";
+  let ok = true;
+  const ran = [];
+  const run = (cmd, args, o) => (ran.push([cmd, ...args, o.cwd]), ok ? { ok: true, code: 0, stdout: out } : { ok: false, code: 2, stdout: "", stderr: "broker 500" });
+  const t0 = new Date("2026-11-08T12:00:00Z");
+  const at = (min) => new Date(t0.getTime() + min * 60_000);
+
+  assert.deepEqual((await refreshCanvases({ root, config: c, run, env, fetchImpl: s.fetchImpl, now: t0, machine: "mac" }))[0].why, "runs on pc");
+  let r = await refreshCanvases({ root, config: c, run, env, fetchImpl: s.fetchImpl, now: t0, machine: "pc" });
+  assert.equal(r[0].action, "posted");
+  assert.deepEqual(ran[0], ["py", "scripts/a.py", root]);
+  const create = s.calls.find((x) => x.method === "conversations.canvases.create");
+  assert.equal(create.body.channel_id, "C0ACCOUNT1");
+  assert.equal(create.body.document_content.markdown, out);
+
+  r = await refreshCanvases({ root, config: c, run, env, fetchImpl: s.fetchImpl, now: at(5), machine: "pc" });
+  assert.equal(r[0].why, "not due");
+
+  ok = false;
+  const n = s.calls.length;
+  r = await refreshCanvases({ root, config: c, run, env, fetchImpl: s.fetchImpl, now: at(10), machine: "pc" });
+  assert.equal(r[0].action, "error");
+  assert.match(r[0].why, /exit 2.*broker 500/);
+  const alerts = () => s.calls.slice(n).filter((x) => x.method === "chat.postMessage");
+  assert.equal(alerts().length, 1);
+  assert.match(alerts()[0].body.text, /Alpaca account\* canvas could not refresh/);
+  assert.ok(!s.calls.slice(n).some((x) => /canvas/.test(x.method)));
+  await refreshCanvases({ root, config: c, run, env, fetchImpl: s.fetchImpl, now: at(20), machine: "pc" });
+  assert.equal(alerts().length, 1); // not repeated while it stays broken
+
+  ok = true;
+  out = "# Account\nequity 10,100";
+  r = await refreshCanvases({ root, config: c, run, env, fetchImpl: s.fetchImpl, now: at(30), machine: "pc" });
+  assert.equal(r[0].action, "updated");
+  assert.equal(alerts().length, 2);
+  assert.match(alerts()[1].body.text, /refreshing again/);
+});
+
+test("project canvas without its own channel is a standalone tab in the project channel, set read-only", async () => {
+  const c = normalize({ ...base, slack: { channel: "C0123ABCD", canvases: [{ key: "account", title: "Alpaca account", command: ["py"], every_min: 10 }] } });
+  const s = fakeSlack();
+  await refreshCanvases({ root: tmpRoot(), config: c, run: () => ({ ok: true, code: 0, stdout: "hi" }), env: tmpEnv(), fetchImpl: s.fetchImpl, machine: "pc" });
+  assert.deepEqual(s.calls.map((x) => x.method), ["canvases.create", "canvases.access.set"]);
+  assert.equal(s.calls[0].body.title, "Alpaca account");
+  assert.deepEqual(s.calls[1].body, { canvas_id: "F1", access_level: "read", channel_ids: ["C0123ABCD"] });
+});
+
+test("watch: project canvases refresh before dispatch", async () => {
+  const order = [];
+  const c = normalize({ ...base, slack: { channel: "C0123ABCD", canvases: [{ key: "account", title: "A", command: ["py"], every_min: 10 }] } });
+  await runWatch({
+    root: tmpRoot(), config: c, env: tmpEnv(), now: new Date("2026-11-08T10:00:00Z"),
+    canvases: async () => (order.push("canvases"), []),
+    dispatch: async () => (order.push("dispatch"), { action: "idle" }),
+    board: async () => (order.push("board"), { action: "skipped" }),
+    news: async () => ({ ok: true }),
+  });
+  assert.deepEqual(order, ["canvases", "dispatch", "board"]);
 });
 
 test("syncBoard: reuses a board this bot pinned earlier, and re-posts if it was deleted", async () => {
