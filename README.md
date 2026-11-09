@@ -80,7 +80,16 @@ crew schedule remove watch
 
 **Several workers at once:** set `"parallel": 5` (with a `"wip_cap"` at least that high). Each run
 then starts up to that many `ready` issues together, each in its own worktree, with the day's budget
-shared out between them. Expect more merge conflicts when tasks touch the same files.
+shared out between them.
+
+**Overlap guard:** a new build waits while another open agent PR, or a running build, changes a
+file it will change. An open PR holds its files until it merges or closes, so the waiting build
+starts later from the merged branch, with no conflict round. The files an issue will change come
+from a `Writes: path/a.py, path/b.py` line in its body, or else from every path the body cites. An
+issue that cites no path runs unguarded; a path cited only for reference also counts, so use `Writes:` to narrow it. `Depends on #12` (or `blocked by #12`) makes a build wait
+until #12 is closed. Shared logs (`PROGRESS.md`, `LEARNINGS.md`, `crew-log/`, `wiki/log.md`) never
+count as overlap; add more with `"overlap_exempt": ["docs/changelog.md", "notes/"]`. A waiting
+issue shows as skipped, with the PR or issue it waits for.
 
 `watch` is the usual way to run dev. Every 10 minutes it does the plain checks (lock, lease,
 budget, WIP cap, queue). It wakes the model only when an issue is `ready` or a review needs a fix.
