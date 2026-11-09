@@ -208,7 +208,8 @@ an issue there alone until you relabel it (`in-review` resumes its PR, `ready` r
 3. **Conflict sync.** An agent PR that conflicts with the default branch is merged up to date.
    Conflicts only in `PROGRESS.md` / `LEARNINGS.md` are union-merged with no model; real conflicts
    get one model merge round. `caps.sync_rounds` (default 2) per PR, then `needs-jk`.
-4. **Otherwise the next issues:** up to `parallel` `ready` issues (lowest `priority:N`, then oldest)
+4. **New builds fill the slots left.** Fix rounds, merge rounds and new builds share one batch of
+   `parallel` slots, so review work never starves the ready queue. Up to `parallel` `ready` issues (lowest `priority:N`, then oldest)
    whose `ready` label was applied by `owner_login`, within the WIP cap. PRs on `needs-jk` do not
    count toward WIP.
 5. **Login check:** a canary call confirms the Claude login works.
@@ -219,7 +220,8 @@ an issue there alone until you relabel it (`in-review` resumes its PR, `ready` r
      web.
    - A `pre-push` hook refuses anything outside `agent/*`.
 7. **After the run, the dispatcher:**
-   - appends to `PROGRESS.md` and `LEARNINGS.md`
+   - appends the run's summary and lesson to `crew-log/<issue>.md` (one file per issue, so two PRs
+     never conflict on it; the PM brief reads the newest of these files)
    - checks the diff against the protected paths
    - pushes the branch (never a force push) and opens the PR. It's a draft if a protected path
      changed (with `protected_draft`), the tests failed, the work is partial, or the run hit a cap.
