@@ -835,3 +835,24 @@ test("a fix round where the agent ran and changed nothing marks the findings han
   const c = w.calls.find((x) => x.line.startsWith("gh pr comment 12 --repo jk/proj --body-file -"));
   assert.match(c.input, /no change made\. The finding is already handled/);
 });
+
+test("crew queue retry skips an issue a worker is running on, so the reset is not silently undone", async () => {
+  const { beginWorker } = await import("../lib/state.mjs");
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 3, attempts: 2, fix_rounds: 2, pr: null, review_keys: ["r1"] }, 2: { cost: 3, attempts: 2, fix_rounds: 0, pr: null, review_keys: [] } } });
+  beginWorker(root, 1, { kind: "fix", pr: 12 });
+  const calls = [];
+  const run = (cmd, args) => {
+    calls.push(`${cmd} ${args.join(" ")}`);
+    if (args[0] === "issue" && args[1] === "view") return { ok: true, stdout: JSON.stringify({ labels: [] }) };
+    return { ok: true, stdout: "" };
+  };
+  const r = retryIssues({ root, config, numbers: [1, 2], run });
+  assert.equal(r[0].state, "skipped");
+  assert.match(r[0].why, /worker is running/);
+  assert.equal(r[1].state, "ready");
+  const l = loadLedger(root);
+  assert.equal(l.issues[1].fix_rounds, 2, "the busy issue is untouched");
+  assert.equal(l.issues[2].attempts, 0);
+  assert.ok(!calls.some((c) => c.startsWith("gh issue edit 1 ")));
+});
