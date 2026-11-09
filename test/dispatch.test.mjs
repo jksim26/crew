@@ -746,3 +746,53 @@ test("board: a Workers section shows each running job; issues being worked are m
   assert.match(text, /#445> exit row · ⚙️ _worker on it_/);
   assert.match(renderBoard(cfg, cols, NOW, []), /Workers\* \(0\/5\)[^\n]*\n• none/);
 });
+
+test("capped test runner: passes args through, and ends a run that outlasts the cap with exit 124", async () => {
+  const { writeTestRunner } = await import("../lib/dispatch.mjs");
+  const { spawnSync } = await import("node:child_process");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-cap-"));
+  const node = JSON.stringify(process.execPath);
+  const quick = writeTestRunner(path.join(dir, "a"), `${node} -e "console.log(process.argv.slice(1).join('|'))"`, process.platform, { capMin: 1 });
+  const win = process.platform === "win32";
+  const ok = spawnSync(quick, ["tests/test_a.py", "-k", "x"], { encoding: "utf8", shell: win });
+  assert.equal(ok.status, 0);
+  assert.match(ok.stdout, /tests\/test_a\.py\|-k\|x/);
+  const slow = writeTestRunner(path.join(dir, "b"), `${node} -e "setTimeout(() => {}, 20000)"`, process.platform, { capMin: 0.02 });
+  const t0 = Date.now();
+  const r = spawnSync(slow, [], { encoding: "utf8", shell: win });
+  assert.equal(r.status, 124);
+  assert.match(r.stdout, /stopped after 0\.02 minutes\. Run fewer tests/);
+  assert.ok(Date.now() - t0 < 10_000, "the cap ended the run, not the command");
+});
+
+test("the agent gets the capped runner; crew's own full run uses the plain one", async () => {
+  const root = tmpRoot();
+  const w = world();
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  const prompt = w.streams[0].o.input;
+  const agentRunner = /run `([^`]+run-tests(?:\.cmd)?) </.exec(prompt)?.[1];
+  assert.ok(agentRunner && !/[\\/]crew[\\/]run-tests/.test(agentRunner), prompt.slice(0, 300));
+  const crewRun = w.calls.find((c) => /run-tests(\.cmd)?/.test(c.line) && !c.line.startsWith("claude"));
+  assert.match(crewRun.line, /[\\/]crew[\\/]run-tests/);
+});
+
+test("a run cut off by a time limit with no commits is queued again by itself, then goes to the owner", async () => {
+  const root = tmpRoot();
+  const cut = { code: null, signal: "SIGINT", timedOut: "idle", stderr: "", stdout: "" };
+  let w = world({ commits: 0, stream: cut });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.outcome, "retry");
+  let e = loadLedger(root).issues[1];
+  assert.equal(e.attempts, 0, "a cut-off run does not use up an attempt");
+  assert.equal(e.timeout_retries, 1);
+  assert.ok(w.calls.some((c) => c.line.startsWith("gh issue edit 1 --repo jk/proj --add-label ready")));
+  // Retries used up: the owner's queue.
+  e.timeout_retries = 2;
+  saveLedger(root, { days: {}, issues: { 1: e } });
+  w = world({ commits: 0, stream: cut });
+  const r2 = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r2.outcome, undefined);
+  assert.ok(w.calls.some((c) => c.line.startsWith("gh issue edit 1 --repo jk/proj --add-label needs-jk")));
+  const note = w.calls.find((c) => c.line.startsWith("gh issue comment 1")).input;
+  assert.match(note, /after 2 automatic retries/);
+});
