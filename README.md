@@ -127,6 +127,37 @@ channel each.
 
 `"board": false` or `"news": false` turns either half off.
 
+### Canvases
+
+With the extra bot scope `canvases:write` (add it, then reinstall the app), the board is also kept as
+the **channel canvas** (the tab at the top of the channel), as markdown with one heading per column.
+It changes when the pinned message changes. Crew only replaces a canvas it made: if the channel
+already has a canvas, crew logs the refusal and leaves it alone. Delete that canvas, or set
+`"canvas": false` to stop trying. A Slack refusal such as a missing scope is retried every 6 hours.
+
+A project can add its own canvases, each filled from a command's stdout (markdown):
+
+```json
+"slack": {
+  "channel": "C0123ABCD",
+  "canvases": [
+    { "key": "account", "title": "Alpaca account", "command": [".venv\\Scripts\\python.exe", "scripts/account_canvas.py"],
+      "every_min": 10, "channel": "C0456EFGH", "machine": "pc" }
+  ]
+}
+```
+
+- `watch` runs each due command **before** dispatch, so a long dev batch never holds it up. Ticks
+  come every 10 minutes, so `every_min` below 10 still means about every 10 minutes.
+- `channel` puts it in that channel's own canvas. This works on the free plan, which allows one
+  canvas per channel. Without `channel`, it becomes a standalone canvas tabbed in the project
+  channel and set to read-only there. That needs a paid Slack plan.
+- `machine` runs it only on that crew machine, for a command that needs that machine's keys.
+- A command that fails, times out (`timeout_sec`, default 120) or prints nothing publishes nothing,
+  so the canvas keeps its last good copy. One line goes to the project channel when it starts
+  failing, and one when it recovers.
+- `crew canvas [--force]` refreshes them now.
+
 ## A new project in one command
 
 Create the GitHub repo and the Slack channel (invite `@crew`), then on the central machine:
