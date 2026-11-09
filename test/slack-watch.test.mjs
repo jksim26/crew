@@ -272,7 +272,7 @@ test("canvas parts: a repo file and a command share one canvas; a failing part k
   };
   const t0 = new Date("2026-11-08T12:00:00Z");
   const at = (min) => new Date(t0.getTime() + min * 60_000);
-  const md = () => s.calls.filter((x) => /canvas/.test(x.method)).at(-1).body;
+  const md = () => s.calls.filter((x) => /canvas/.test(x.method) && x.body.changes?.[0]?.operation !== "rename").at(-1).body;
   const foot = "\n\n_Published from wiki/roadmap.md on main. Edit it by PR; edits made here are overwritten._";
 
   let r = await refreshCanvases({ root, config: c, run, env, fetchImpl: s.fetchImpl, now: t0, machine: "pc" });
@@ -288,6 +288,33 @@ test("canvas parts: a repo file and a command share one canvas; a failing part k
   const now2 = md().changes[0].document_content.markdown;
   assert.match(now2, /^> ⚠️ \*\*Stale:\*\*.*broker down.*\n\n# Account\nequity 1\n\n---\n\n# Roadmap\n## Now\n- Rust P2/s);
   assert.match(s.calls.filter((x) => x.method === "chat.postMessage").at(-1).body.text, /Live\* canvas could not refresh.*broker down/);
+});
+
+test("canvas name: the channel canvas is created with the title and renamed when the title changes", async () => {
+  const root = tmpRoot();
+  const s = fakeSlack();
+  const pub = (title, markdown, now) => publishCanvas({ root, key: "live", channel: "C0123ABCD", title, markdown, hash: markdown, token: "xoxb-test", fetchImpl: s.fetchImpl, now });
+  const t0 = new Date("2026-11-08T12:00:00Z");
+  await pub("Live board", "a", t0);
+  assert.equal(s.calls[0].method, "conversations.canvases.create");
+  assert.equal(s.calls[0].body.title, "Live board");
+  // Same content, but the create-time title is not trusted on a channel canvas: one explicit rename.
+  const r = await pub("Live board", "a", t0);
+  assert.equal(r.action, "updated");
+  const rename = s.calls.find((c) => c.body.changes?.[0]?.operation === "rename");
+  assert.deepEqual(rename.body.changes[0].title_content, { type: "markdown", markdown: "Live board" });
+  // Then nothing until the content or the title changes.
+  const n = s.calls.length;
+  assert.equal((await pub("Live board", "a", t0)).action, "skipped");
+  await pub("Trading live", "a", t0);
+  assert.deepEqual(s.calls.slice(n).map((c) => c.body.changes[0].operation), ["replace", "rename"]);
+  // A refused rename never blocks the content and is not retried every tick.
+  const bad = fakeSlack({ canvas: { "canvases.edit": (b) => (b.changes[0].operation === "rename" ? { ok: false, error: "invalid_arguments" } : { ok: true }) } });
+  const root2 = tmpRoot();
+  const pub2 = (title, markdown) => publishCanvas({ root: root2, key: "live", channel: "C0123ABCD", title, markdown, hash: markdown, token: "xoxb-test", fetchImpl: bad.fetchImpl, now: t0 });
+  await pub2("X", "a");
+  assert.equal((await pub2("X", "b")).action, "updated");
+  assert.equal((await pub2("X", "b")).action, "skipped");
 });
 
 test("watch: project canvases refresh before dispatch", async () => {
