@@ -676,3 +676,73 @@ test("one run fills every slot: a fix round and new builds start together", asyn
   assert.equal(w.streams.length, 3);
   assert.equal(w.calls.filter((c) => c.line.startsWith("claude -p --max-turns 1")).length, 1, "one login check per run");
 });
+
+test("ledger: two copies saved by different workers both keep their changes and day costs", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: { "2026-11-08": 1 }, issues: { 1: { cost: 0, attempts: 0, fix_rounds: 0, review_keys: [] }, 2: { cost: 0, attempts: 0, fix_rounds: 0, review_keys: [] } } });
+  const a = loadLedger(root);
+  const b = loadLedger(root);
+  a.issues[1].attempts = 1;
+  a.days["2026-11-08"] += 2;
+  b.issues[2].fix_rounds = 3;
+  b.days["2026-11-08"] += 5;
+  const held = b.issues[2];
+  saveLedger(root, a);
+  saveLedger(root, b);
+  const l = loadLedger(root);
+  assert.equal(l.issues[1].attempts, 1);
+  assert.equal(l.issues[2].fix_rounds, 3);
+  assert.equal(l.days["2026-11-08"], 8);
+  assert.equal(b.issues[2], held, "a running job's entry object is never swapped out");
+});
+
+test("workers: the lock covers only planning; a busy issue is skipped and the run reports full", async () => {
+  const { beginWorker, liveWorkers } = await import("../lib/state.mjs");
+  const root = tmpRoot();
+  beginWorker(root, 1, { kind: "build", pr: null, title: "Add a slugify helper" });
+  // One slot, taken by the running worker on #1.
+  let w = world();
+  const full = await runDispatch({ root, config: { ...config, parallel: 1 }, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(full.action, "full");
+  assert.equal(w.streams.length, 0);
+  // Two slots: #1 stays with its worker, #2 starts, and the dispatch lock is free while #2 runs.
+  const issues = [1, 2].map((n) => ({ number: n, title: `Task ${n}`, body: "b", labels: [{ name: "ready" }], createdAt: `2026-11-0${n}T00:00:00Z`, url: `u${n}` }));
+  let lockDuringRun = null;
+  let workersDuringRun = null;
+  w = world({ issues, stream: () => {
+    lockDuringRun = fs.existsSync(path.join(root, ".crew", "dispatch.lock"));
+    workersDuringRun = liveWorkers(root).map((x) => [x.issue, x.kind, x.phase]);
+    return streamOk();
+  } });
+  const r = await runDispatch({ root, config: { ...config, parallel: 2 }, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "built");
+  assert.equal(r.issue, 2);
+  assert.equal(lockDuringRun, false, "the next tick can plan while this job runs");
+  assert.deepEqual(workersDuringRun, [[1, "build", "starting"], [2, "build", "agent working"]]);
+  assert.deepEqual(liveWorkers(root).map((x) => x.issue), [1], "a finished job removes its worker file");
+});
+
+test("workers: a file left by a dead process is cleaned up", async () => {
+  const { liveWorkers, workersDir } = await import("../lib/state.mjs");
+  const root = tmpRoot();
+  fs.mkdirSync(workersDir(root), { recursive: true });
+  fs.writeFileSync(path.join(workersDir(root), "7.json"), JSON.stringify({ issue: 7, pid: 999999, host: os.hostname(), started: NOW.toISOString(), kind: "fix" }));
+  assert.deepEqual(liveWorkers(root, () => false), []);
+  assert.ok(!fs.existsSync(path.join(workersDir(root), "7.json")));
+});
+
+test("board: a Workers section shows each running job; issues being worked are marked", async () => {
+  const { renderBoard } = await import("../lib/slack.mjs");
+  const cfg = { ...config, parallel: 5 };
+  const workers = [
+    { issue: 445, kind: "fix", pr: 445, phase: "running tests", started: "2026-11-08T09:48:00Z", cost: 0.4, title: "exit-row-stop" },
+    { issue: 427, kind: "build", pr: null, phase: "agent working", started: "2026-11-08T09:29:00Z" },
+  ];
+  const cols = { ready: [], doing: [{ number: 427, title: "A4", url: "u427" }], "in-review": [{ number: 445, title: "exit row", url: "u445" }], blocked: [], "needs-jk": [] };
+  const text = renderBoard(cfg, cols, NOW, workers);
+  assert.match(text, /Workers\* \(2\/5\)/);
+  assert.match(text, /#445> fix round · <https:\/\/github.com\/jk\/proj\/pull\/445\|PR #445> · running tests · 12m · \$0\.40/);
+  assert.match(text, /#427> build · agent working · 31m/);
+  assert.match(text, /#445> exit row · ⚙️ _worker on it_/);
+  assert.match(renderBoard(cfg, cols, NOW, []), /Workers\* \(0\/5\)[^\n]*\n• none/);
+});

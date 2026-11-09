@@ -191,6 +191,14 @@ token). Then `crew queue labels` creates a `pc` and a `mac` label.
 The loop is built to need you as little as possible. `needs-jk` is your only queue; crew leaves
 an issue there alone until you relabel it (`in-review` resumes its PR, `ready` rebuilds it).
 
+**Rolling workers (0.8.0).** The dispatch lock covers only planning, which takes seconds. Each job then
+runs under its own worker file, `.crew/workers/<issue>.json`, which records the issue, kind, PR, phase,
+start time and cost so far. Every `watch` tick tops up whatever slots are free (`parallel` minus running
+workers), so a slow build never holds up the rest. See them with `crew workers`, or in the
+**⚙️ Workers** section at the top of the Slack board. `crew stop` ends them all. A file left by a dead
+process is cleaned up on the next tick. Ledger writes from parallel workers merge, so they never
+overwrite each other.
+
 1. **Plain checks, with no model call:** the lock, your lease, the daily budget, and the queue.
    Agent PRs merged or closed are reconciled; a green, reviewed, unprotected PR is merged
    (`merge: "codex-clean"`), bound to the head it checked (`--match-head-commit`).
