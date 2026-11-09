@@ -856,3 +856,29 @@ test("crew queue retry skips an issue a worker is running on, so the reset is no
   assert.equal(l.issues[2].attempts, 0);
   assert.ok(!calls.some((c) => c.startsWith("gh issue edit 1 ")));
 });
+
+test("crew queue retry refuses closed issues and issues whose PR already merged", () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: {
+    1: { cost: 3, attempts: 2, fix_rounds: 3, pr: 11, review_keys: [] },
+    2: { cost: 3, attempts: 2, fix_rounds: 3, pr: 12, review_keys: [] },
+    3: { cost: 3, attempts: 2, fix_rounds: 3, pr: 13, review_keys: [] },
+  } });
+  const calls = [];
+  const run = (cmd, args) => {
+    const l = `${cmd} ${args.join(" ")}`;
+    calls.push(l);
+    if (l.startsWith("gh issue view 1 ") && l.includes("--json state")) return { ok: true, stdout: JSON.stringify({ state: "CLOSED" }) };
+    if (l.startsWith("gh issue view") && l.includes("--json state")) return { ok: true, stdout: JSON.stringify({ state: "OPEN" }) };
+    if (l.startsWith("gh issue view")) return { ok: true, stdout: JSON.stringify({ labels: [] }) };
+    if (l.startsWith("gh pr view 12")) return { ok: true, stdout: JSON.stringify({ state: "MERGED" }) };
+    if (l.startsWith("gh pr view 13")) return { ok: true, stdout: JSON.stringify({ state: "OPEN" }) };
+    return { ok: true, stdout: "" };
+  };
+  const r = retryIssues({ root, config, numbers: [1, 2, 3], run });
+  assert.deepEqual(r.map((x) => x.state), ["skipped", "skipped", "in-review"]);
+  assert.match(r[0].why, /closed/);
+  assert.match(r[1].why, /PR #12 already merged/);
+  assert.ok(!calls.some((c) => /^gh issue edit [12] /.test(c)), "nothing relabels shipped or closed work");
+  assert.equal(loadLedger(root).issues[2].fix_rounds, 3);
+});
