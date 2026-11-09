@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runDispatch, slugify, issueFromBranch, prePushHook, agentEnv, agentPermissions, buildTaskPrompt, protectedHits, codexFindings } from "../lib/dispatch.mjs";
+import { buildBranch } from "../lib/dispatch.mjs";
+import { runDispatch, slugify, issueFromBranch, prePushHook, agentEnv, agentPermissions, buildTaskPrompt, protectedHits, codexFindings, gateFeedback, retryIssues } from "../lib/dispatch.mjs";
 import { loadLedger, saveLedger, acquireLock, takeLease } from "../lib/state.mjs";
 import { normalize } from "../lib/config.mjs";
 import { runStreaming } from "../lib/exec.mjs";
@@ -31,6 +32,7 @@ function world(opts = {}) {
     const ok = (stdout = "") => ({ ok: true, code: 0, stdout, stderr: "" });
     if (cmd === "claude") return ok(JSON.stringify(opts.canaryFail ? { type: "result", subtype: "error", is_error: true, result: "Not logged in" } : { type: "result", subtype: "success", is_error: false, result: "ok", total_cost_usd: 0.001 }));
     if (line.startsWith("gh pr list")) return ok(JSON.stringify(opts.openPrs ?? []));
+    if (line.startsWith("gh issue list") && line.includes("--label needs-jk")) return ok(JSON.stringify(opts.needsJk ?? []));
     if (line.startsWith("gh issue list")) return ok(JSON.stringify(issues));
     if (line.startsWith("gh api --paginate")) return ok(JSON.stringify([[{ event: "labeled", label: { name: "ready" }, actor: { login: "jk" } }]]));
     if (line.startsWith("gh api repos/jk/proj/pulls/") && line.includes("/reviews")) return ok(JSON.stringify(opts.reviews ?? []));
@@ -71,7 +73,8 @@ test("happy path: canary, doing, worktree, agent, push agent branch, PR, @codex 
   const lines = w.calls.map((c) => c.line);
   const idx = (p) => lines.findIndex((l) => l.startsWith(p));
   assert.ok(idx("claude -p --max-turns 1") < idx("gh issue edit 1 --repo jk/proj --add-label doing"));
-  assert.ok(lines.some((l) => l.includes("push --force-with-lease --quiet origin HEAD:refs/heads/agent/1-add-a-slugify-helper")));
+  assert.ok(lines.some((l) => l.includes("push --quiet origin HEAD:refs/heads/agent/1-add-a-slugify-helper")));
+  assert.ok(!lines.some((l) => / push /.test(l) && /--force/.test(l)), "crew never force-pushes");
   assert.ok(!lines.some((l) => /push.*refs\/heads\/main/.test(l)));
   const create = w.calls.find((c) => c.line.startsWith("gh pr create"));
   assert.ok(!create.line.includes("--draft"));
@@ -204,9 +207,142 @@ test("codex findings after the last push trigger fix rounds up to caps.fix_round
   saveLedger(root, l);
   const w4 = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews: [...more, { id: 79, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:45:00Z", body: "P2: again" }] });
   const r4 = await runDispatch({ root, config, run: w4.run, runStream: w4.runStream, now: NOW });
-  assert.equal(r4.action, "blocked");
+  // A build attempt is left (1 of 2): close the PR and queue a fresh build that starts from the findings.
+  assert.equal(r4.action, "requeued");
   assert.equal(r4.rounds, 3);
   assert.equal(w4.streams.length, 0);
+  assert.ok(w4.calls.some((c) => c.line.startsWith("gh pr close 12")));
+  assert.ok(w4.calls.some((c) => c.line.startsWith("gh issue edit 1 --repo jk/proj --add-label ready")));
+  assert.match(loadLedger(root).issues[1].carry.at(-1).body, /P2: again/);
+
+  // No attempts left: the owner's queue, with the findings in the comment.
+  l = loadLedger(root);
+  Object.assign(l.issues[1], { attempts: 2, fix_rounds: 3 });
+  saveLedger(root, l);
+  const w5 = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews: [...more, { id: 80, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:50:00Z", body: "P1: nope" }] });
+  const r5 = await runDispatch({ root, config, run: w5.run, runStream: w5.runStream, now: NOW });
+  assert.equal(r5.action, "escalated");
+  const c5 = w5.calls.find((c) => c.line.startsWith("gh issue comment 1"));
+  assert.ok(w5.calls.some((c) => c.line.startsWith("gh issue edit 1 --repo jk/proj --add-label needs-jk")));
+  assert.match(c5.input, /P1: nope/);
+});
+
+test("build attempts no longer stop fix rounds; P3 notes never start one", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 2, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [] } } });
+  const p3 = [{ id: 90, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:00:00Z", body: "![P3 Badge](x) nit: rename" }];
+  const w = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews: p3, issues: [] });
+  assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "idle");
+  assert.deepEqual(loadLedger(root).issues[1].review_keys, ["r90"]);
+  const p1 = [...p3, { id: 91, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:10:00Z", body: "![P1 Badge](x) wrong sign" }];
+  const w2 = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews: p1 });
+  assert.equal((await runDispatch({ root, config, run: w2.run, runStream: w2.runStream, now: NOW })).action, "fixed");
+});
+
+test("the project's PR gate: an effective NOT-merged decision becomes a fix round; never-auto-merge goes to the owner", () => {
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", gate_comment_prefix: "pr-gate" });
+  const at = (m) => `2026-11-08T09:${m}:00Z`;
+  const raw = [
+    { id: 1, author: "jk", at: at("01"), body: "pr-gate (claude) head abc1234\n- [P3] a.py:1 nit\nVERDICT: MERGE" },
+    { id: 2, author: "jk", at: at("02"), body: "pr-gate (codex) head abc1234\n- [P1] gate.py:408 wrong\n- [P2] journal.py:280 PRE-EXISTING old\n- [P2] journal.py:300 also\nVERDICT: BLOCK" },
+    { id: 3, author: "jk", at: at("03"), body: "pr-gate: NOT merged, owner merge required: codex: VERDICT: BLOCK (head abc1234)." },
+  ];
+  const g = gateFeedback(cfg, raw, "2026-11-08T08:00:00Z");
+  assert.deepEqual(g.findings.map((f) => f.body), ["- [P1] gate.py:408 wrong", "- [P2] journal.py:300 also"]);
+  // A raw BLOCK the gate downgraded is not a fix round.
+  assert.equal(gateFeedback(cfg, [raw[1], { id: 4, author: "jk", at: at("04"), body: "pr-gate: merged (codex BLOCK downgraded: every finding PRE-EXISTING)" }], null).findings.length, 0);
+  // Someone else's look-alike comment is ignored.
+  assert.equal(gateFeedback(cfg, raw.map((x) => ({ ...x, author: "mallory" })), null).findings.length, 0);
+  // never-auto-merge: owner only.
+  assert.match(gateFeedback(cfg, [{ id: 5, author: "jk", at: at("05"), body: "pr-gate: owner merge required: `x/models.py` is in the never-auto-merge set" }], null).ownerOnly, /never-auto-merge/);
+  // A block with nothing parseable: the owner's queue.
+  assert.ok(gateFeedback(cfg, [raw[2]], null).unparsed);
+});
+
+test("CI failures and crew's own drafts start repair rounds, one per head; needs-jk PRs are left alone", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [], draft_why: "tests failed", draft_tail: "1 failed" } } });
+  const pr = { number: 12, headRefName: "agent/1-x", url: "u", isDraft: true, headRefOid: "h1", statusCheckRollup: [{ name: "tests", conclusion: "FAILURE" }] };
+  const w = world({ openPrs: [pr] });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "fixed");
+  assert.match(w.streams[0].o.input, /CI check\(s\) failed[\s\S]*opened as a draft because tests failed/);
+  assert.ok(w.calls.some((c) => c.line.startsWith("gh pr ready 12")), "a repaired draft becomes a normal PR");
+  assert.equal(loadLedger(root).issues[1].draft_why, null);
+  // Owner's queue: nothing happens to its PR.
+  const w2 = world({ openPrs: [{ ...pr, headRefOid: "h2" }], needsJk: [{ number: 1 }], issues: [] });
+  assert.equal((await runDispatch({ root, config, run: w2.run, runStream: w2.runStream, now: NOW })).action, "idle");
+  assert.equal(w2.streams.length, 0);
+});
+
+test("WIP counts only PRs in flight, not those waiting on the owner", async () => {
+  const prs = [{ number: 5, headRefName: "agent/7-x", url: "u" }, { number: 6, headRefName: "agent/8-y", url: "u" }];
+  const w = world({ openPrs: prs, needsJk: [{ number: 7 }, { number: 8 }] });
+  assert.equal((await runDispatch({ root: tmpRoot(), config, run: w.run, runStream: w.runStream, now: NOW })).action, "built");
+});
+
+test("a rebuild gets its own branch and never force-pushes", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 3, review_keys: [], carry: [{ author: "codex", body: "P1: old bug" }] } } });
+  const w = world();
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "built");
+  assert.ok(w.calls.some((c) => c.line.includes("push --quiet origin HEAD:refs/heads/agent/1-add-a-slugify-helper-r2")));
+  assert.match(w.streams[0].o.input, /unresolved findings[\s\S]*P1: old bug/);
+  assert.deepEqual(loadLedger(root).issues[1].carry, []);
+});
+
+test("a crew-side failure before anything is published is retried without using an attempt", async () => {
+  const root = tmpRoot();
+  const w = world();
+  const base = w.run;
+  w.run = (cmd, args, o) => (cmd === "git" && args.includes("push") ? { ok: false, code: 1, stdout: "", stderr: "! [rejected] (stale info)" } : base(cmd, args, o));
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.outcome, "retry");
+  const e = loadLedger(root).issues[1];
+  assert.equal(e.attempts, 0);
+  assert.equal(e.infra_retries, 1);
+  assert.ok(w.calls.some((c) => c.line.startsWith("gh issue edit 1 --repo jk/proj --add-label ready")));
+});
+
+test("conflict sync: only append-only logs conflict -> merged and pushed with no model", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [] } } });
+  const w = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u", mergeable: "CONFLICTING" }], issues: [] });
+  const base = w.run;
+  w.run = (cmd, args, o) => {
+    const line = `${cmd} ${args.join(" ")}`;
+    if (line.startsWith("git merge --no-edit")) return { ok: false, code: 1, stdout: "", stderr: "CONFLICT" };
+    if (line.startsWith("git diff --name-only --diff-filter=U")) return { ok: true, code: 0, stdout: "PROGRESS.md\n", stderr: "" };
+    if (line.startsWith("git rev-parse -q --verify MERGE_HEAD")) return { ok: true, code: 0, stdout: "x", stderr: "" };
+    return base(cmd, args, o);
+  };
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "idle");
+  assert.equal(w.streams.length, 0);
+  assert.ok(w.calls.some((c) => c.line.startsWith("git merge-file --union")));
+  assert.ok(w.calls.some((c) => c.line.includes("push --quiet origin HEAD:refs/heads/agent/1-x")));
+  assert.equal(loadLedger(root).issues[1].syncs, 1);
+});
+
+test("conflict sync: a real code conflict gets one model merge round", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [] } } });
+  const w = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u", mergeable: "CONFLICTING" }], issues: [{ number: 1, title: "x", body: "b", labels: [{ name: "in-review" }], url: "u1" }] });
+  const base = w.run;
+  let resolved = false;
+  w.run = (cmd, args, o) => {
+    const line = `${cmd} ${args.join(" ")}`;
+    if (line.startsWith("git merge --no-edit")) return { ok: false, code: 1, stdout: "", stderr: "CONFLICT" };
+    if (line.startsWith("git diff --name-only --diff-filter=U")) return { ok: true, code: 0, stdout: resolved ? "" : "lib/a.js\n", stderr: "" };
+    if (line.startsWith("git rev-parse -q --verify MERGE_HEAD")) return resolved ? { ok: false, code: 1, stdout: "", stderr: "" } : { ok: true, code: 0, stdout: "x", stderr: "" };
+    return base(cmd, args, o);
+  };
+  w.runStream = async (cmd, args, o) => { w.streams.push({ args, o }); resolved = true; return streamOk(); };
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "synced");
+  assert.match(w.streams[0].o.input, /MERGE ROUND[\s\S]*lib\/a\.js/);
+  assert.ok(!w.calls.some((c) => / push /.test(c.line) && /--force/.test(c.line)));
 });
 
 test("a fix round whose PR was closed while the agent worked pushes and comments nothing", async () => {
@@ -455,9 +591,9 @@ test("merge codex-clean: merges a green, Codex-clean, unprotected agent PR; skip
       { number: 13, headRefName: "agent/3-c", isDraft: false },
       { number: 14, headRefName: "agent/4-d", isDraft: true },
     ]) };
-    if (l.startsWith("gh pr view 11")) return { ok: true, stdout: JSON.stringify({ files: [{ path: "lib/a.js" }], statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "SKIPPED" }], mergeable: "MERGEABLE" }) };
-    if (l.startsWith("gh pr view 12")) return { ok: true, stdout: JSON.stringify({ files: [{ path: "trading/risk/x.py" }], statusCheckRollup: [{ conclusion: "SUCCESS" }], mergeable: "MERGEABLE" }) };
-    if (l.startsWith("gh pr view 13")) return { ok: true, stdout: JSON.stringify({ files: [{ path: "lib/c.js" }], statusCheckRollup: [{ conclusion: "SUCCESS" }], mergeable: "MERGEABLE" }) };
+    if (l.startsWith("gh pr view 11")) return { ok: true, stdout: JSON.stringify({ headRefOid: "sha11", files: [{ path: "lib/a.js" }], statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "SKIPPED" }], mergeable: "MERGEABLE" }) };
+    if (l.startsWith("gh pr view 12")) return { ok: true, stdout: JSON.stringify({ headRefOid: "sha12", files: [{ path: "trading/risk/x.py" }], statusCheckRollup: [{ conclusion: "SUCCESS" }], mergeable: "MERGEABLE" }) };
+    if (l.startsWith("gh pr view 13")) return { ok: true, stdout: JSON.stringify({ headRefOid: "sha13", files: [{ path: "lib/c.js" }], statusCheckRollup: [{ conclusion: "SUCCESS" }], mergeable: "MERGEABLE" }) };
     if (l.includes("issues/11/comments")) return { ok: true, stdout: JSON.stringify([codexOk]) };
     if (l.includes("/comments") || l.includes("/reviews")) return { ok: true, stdout: "[]" };
     return { ok: true, stdout: "" };
@@ -466,7 +602,7 @@ test("merge codex-clean: merges a green, Codex-clean, unprotected agent PR; skip
   const cfg = normalize({ repo: "jk/proj", owner_login: "jk", protected_paths: ["trading/risk/*"], merge: "codex-clean" });
   const merged = mergeClean({ config: cfg, ledger, run, root: tmpRoot() });
   assert.deepEqual(merged, [11]);
-  assert.ok(calls.includes("gh pr merge 11 --repo jk/proj --merge --delete-branch"));
+  assert.ok(calls.includes("gh pr merge 11 --repo jk/proj --merge --delete-branch --match-head-commit sha11"));
   assert.ok(!calls.some((c) => /gh pr merge 1[234]/.test(c)));
 });
 
@@ -492,4 +628,32 @@ test("gitWhy keeps the reason, not the 'To <url>' line", async () => {
   assert.match(why, /rejected.*fetch first.*failed to push/);
   assert.doesNotMatch(why, /^To /);
   assert.equal(gitWhy({ code: 128, stderr: "" }), "exit 128");
+});
+
+test("crew queue retry: resets an issue's counters and relabels it by whether its PR is open", () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: { "2026-11-08": 40 }, issues: {
+    1: { cost: 16, attempts: 2, fix_rounds: 3, pr: 12, branch: "agent/1-x", last_push_at: "2026-11-08T08:00:00Z", review_keys: ["r1"] },
+    2: { cost: 3, attempts: 2, fix_rounds: 0, pr: 13, branch: "agent/2-y", last_push_at: "2026-11-08T08:00:00Z", review_keys: [] },
+  } });
+  const calls = [];
+  const run = (cmd, args) => {
+    const l = `${cmd} ${args.join(" ")}`;
+    calls.push(l);
+    if (l.startsWith("gh pr view 12")) return { ok: true, stdout: JSON.stringify({ state: "OPEN" }) };
+    if (l.startsWith("gh pr view 13")) return { ok: true, stdout: JSON.stringify({ state: "CLOSED" }) };
+    if (l.startsWith("gh issue view")) return { ok: true, stdout: JSON.stringify({ labels: [{ name: "blocked" }] }) };
+    return { ok: true, stdout: "" };
+  };
+  const r = retryIssues({ root, config, numbers: [1, 2], run });
+  assert.deepEqual(r, [{ issue: 1, state: "in-review", pr: 12 }, { issue: 2, state: "ready", pr: null }]);
+  const l = loadLedger(root);
+  assert.deepEqual([l.issues[1].attempts, l.issues[1].fix_rounds, l.issues[1].cost, l.issues[1].review_keys], [0, 0, 0, []]);
+  assert.equal(l.issues[1].last_push_at, "2026-11-08T08:00:00Z");
+  assert.equal(l.issues[2].pr, null);
+  assert.equal(l.days["2026-11-08"], 40, "the day's real spend is untouched");
+  assert.ok(calls.some((c) => c.startsWith("gh issue edit 1 --repo jk/proj --add-label in-review --remove-label blocked")));
+  assert.ok(calls.some((c) => c.startsWith("gh issue edit 2 --repo jk/proj --add-label ready --remove-label blocked")));
+  // Issue 2 was built before: its rebuild gets a fresh branch name.
+  assert.equal(buildBranch("agent/", { number: 2, title: "Y" }, l.issues[2]), "agent/2-y-r2");
 });
