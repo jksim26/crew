@@ -796,3 +796,42 @@ test("a run cut off by a time limit with no commits is queued again by itself, t
   const note = w.calls.find((c) => c.line.startsWith("gh issue comment 1")).input;
   assert.match(note, /after 2 automatic retries/);
 });
+
+const apiDown = () => ({ code: 1, signal: null, timedOut: null, stderr: "", stdout:
+  JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "API Error: Connection error.", total_cost_usd: 0 }) + "\n" });
+
+test("an API error (subtype success, is_error true) is a cut-off run: a new build retries by itself", async () => {
+  const root = tmpRoot();
+  const w = world({ commits: 0, stream: apiDown() });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.outcome, "retry");
+  assert.match(r.why, /stopped: API Error: Connection error/);
+  assert.equal(loadLedger(root).issues[1].attempts, 0);
+});
+
+test("a fix round hit by an API error does not count, and its findings are tried again next tick", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [] } } });
+  const reviews = [{ id: 77, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:00:00Z", body: "P1: null check missing" }];
+  const w = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews, commits: 0, stream: apiDown() });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.outcome, "retry");
+  const e = loadLedger(root).issues[1];
+  assert.equal(e.fix_rounds, 0);
+  assert.deepEqual(e.review_keys, [], "findings stay open for the retry");
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh pr comment 12")));
+});
+
+test("a fix round where the agent ran and changed nothing marks the findings handled and says why on the PR", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [] } } });
+  const reviews = [{ id: 77, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:00:00Z", body: "P2: already fixed upstream" }];
+  const report = { status: "done", summary: "The finding is already handled at manage.py:120; no change needed.", tests: { command: "npm test", passed: true } };
+  const w = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews, commits: 0, stream: streamOk(report, 0.3) });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "fixed");
+  assert.equal(r.why, "no change needed");
+  assert.deepEqual(loadLedger(root).issues[1].review_keys, ["r77"]);
+  const c = w.calls.find((x) => x.line.startsWith("gh pr comment 12 --repo jk/proj --body-file -"));
+  assert.match(c.input, /no change made\. The finding is already handled/);
+});
