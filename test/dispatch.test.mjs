@@ -262,6 +262,26 @@ test("the project's PR gate: an effective NOT-merged decision becomes a fix roun
   assert.ok(gateFeedback(cfg, [raw[2]], null).unparsed);
 });
 
+test("the PR gate: carried OPEN findings are fix-round findings; an unparsed BLOCK report is handed over whole (#384)", () => {
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", gate_comment_prefix: "pr-gate" });
+  const at = (m) => `2026-11-09T17:${m}:00Z`;
+  const claude = { id: 1, author: "jk", at: at("40"), body: "pr-gate (claude) head 32db218\nCARRIED C1: OPEN .golden-bt/x:1 scratch dir committed\nCARRIED C2: CLOSED a.py:3 fixed\n- [P3] .golden-bt/x:1 nit\nVERDICT: MERGE" };
+  const codex = { id: 2, author: "jk", at: at("41"), body: "pr-gate (codex) head 32db218\nCARRIED C1: OPEN trading/pipeline.py:916 `_structural_block` still passes only the plan dict\nVERDICT: BLOCK" };
+  const decision = { id: 3, author: "jk", at: at("43"), body: "pr-gate: NOT merged, owner merge required: codex: VERDICT: BLOCK (head 32db218)." };
+  const g = gateFeedback(cfg, [claude, codex, decision], null);
+  assert.deepEqual(g.findings.map((f) => f.body), [
+    "CARRIED C1: OPEN .golden-bt/x:1 scratch dir committed",
+    "CARRIED C1: OPEN trading/pipeline.py:916 `_structural_block` still passes only the plan dict",
+  ]);
+  assert.equal(g.unparsed, null);
+  // A BLOCK whose lines match no known shape: the fix round gets that report whole, not the owner.
+  const odd = { id: 4, author: "jk", at: at("42"), body: "pr-gate (codex) head 32db218\nThe door price differs from the row's.\nVERDICT: BLOCK" };
+  const h = gateFeedback(cfg, [odd, decision], null);
+  assert.equal(h.findings.length, 1);
+  assert.match(h.findings[0].body, /^The PR gate blocked this PR; its report:\npr-gate \(codex\) head 32db218\nThe door price differs/);
+  assert.equal(h.unparsed, null);
+});
+
 test("CI failures and crew's own drafts start repair rounds, one per head; needs-jk PRs are left alone", async () => {
   const root = tmpRoot();
   saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [], draft_why: "tests failed", draft_tail: "1 failed" } } });
