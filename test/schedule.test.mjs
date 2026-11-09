@@ -63,7 +63,9 @@ test("planJob: per platform, dispatch limit follows the wall cap", () => {
   assert.match(mac.file, /LaunchAgents[\\/]dev\.crew\.my-proj-brief\.plist$/);
   assert.match(mac.text, /\/opt\/tools/);
   const win = planJob({ root: "C:\\r", config, job: "dispatch", when: { every: 30 }, platform: "win32", run: fake });
-  assert.match(win.text, /New-TimeSpan -Minutes 55/); // wall 40 + 15
+  assert.match(win.text, /New-TimeSpan -Minutes 85/); // agent wall 40 + crew tests 30 + 15: a tick outlives its workers
+  const watch = planJob({ root: "C:\\r", config, job: "watch", when: { every: 10 }, platform: "win32", run: fake });
+  assert.match(watch.text, /New-TimeSpan -Minutes 85/);
   assert.throws(() => planJob({ root: "/r", config, job: "nope", when: { every: 30 } }), /unknown job/);
 });
 
