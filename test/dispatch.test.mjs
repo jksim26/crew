@@ -38,6 +38,7 @@ function world(opts = {}) {
     if (line.startsWith("gh api repos/jk/proj/pulls/") && line.includes("/reviews")) return ok(JSON.stringify(opts.reviews ?? []));
     if (line.startsWith("gh api repos/jk/proj/pulls/") && line.includes("/comments")) return ok("[]");
     if (line.startsWith("gh api repos/jk/proj/issues/") && line.includes("/comments")) return ok("[]");
+    if (line.startsWith("gh issue view") && line.endsWith("--json state")) return ok(JSON.stringify({ state: (opts.issueStates ?? {})[args[2]] ?? "OPEN" }));
     if (line.startsWith("gh issue view") && line.includes("labels") && !line.includes("title")) return ok(JSON.stringify({ labels: [{ name: "ready" }] }));
     if (line.startsWith("gh issue view")) return ok(JSON.stringify(issues[0]));
     if (line.startsWith("gh pr view") && line.includes("--json state") && opts.prState) return ok(JSON.stringify({ state: opts.prState }));
@@ -958,4 +959,63 @@ test("crew queue retry refuses closed issues and issues whose PR already merged"
   assert.match(r[1].why, /PR #12 already merged/);
   assert.ok(!calls.some((c) => /^gh issue edit [12] /.test(c)), "nothing relabels shipped or closed work");
   assert.equal(loadLedger(root).issues[2].fix_rounds, 3);
+});
+
+// ---- overlap guard -------------------------------------------------------------------------
+import { predictFiles, dependsOn, overlapWith, isExempt } from "../lib/overlap.mjs";
+
+test("overlap: predicts files from paths or a Writes: line; parses depends-on; exempts logs", () => {
+  assert.deepEqual(predictFiles("Fix `trading/risk/manage.py:2160` and trading/tests/test_manage.py."), ["trading/risk/manage.py", "trading/tests/test_manage.py"]);
+  assert.deepEqual(predictFiles("See trading/risk/manage.py\nWrites: lib/a.mjs, lib/b.mjs"), ["lib/a.mjs", "lib/b.mjs"], "an explicit Writes: line wins");
+  assert.deepEqual(predictFiles("no files here, just e.g. words."), []);
+  assert.deepEqual(dependsOn("Depends on #457 and #458. blocked by #9"), [457, 458, 9]);
+  assert.ok(isExempt("wiki/log.md") && isExempt("crew-log/12.md") && !isExempt("wiki/system/x.md"));
+  const holders = [{ label: "PR #1", issue: 1, files: ["a/x.py", "wiki/log.md"] }];
+  assert.equal(overlapWith(["wiki/log.md"], holders), null, "a shared log never overlaps");
+  assert.equal(overlapWith(["a/x.py"], holders, { issue: 1 }), null, "an issue's own older PR never blocks it");
+  assert.deepEqual(overlapWith(["a/x.py", "b.py"], holders, { issue: 2 }).hit, ["a/x.py"]);
+});
+
+const ready = (n, body) => ({ number: n, title: `Task ${n}`, body, labels: [{ name: "ready" }], createdAt: `2026-11-0${n}T00:00:00Z`, url: `u${n}` });
+
+test("overlap: a build waits while an open PR changes its files; logs and other files still run", async () => {
+  const issues = [ready(1, "Edit `trading/risk/manage.py`."), ready(2, "Edit lib/other.mjs"), ready(3, "Note it in wiki/log.md")];
+  const openPrs = [{ number: 19, headRefName: "agent/9-x", url: "u", files: [{ path: "trading/risk/manage.py" }, { path: "wiki/log.md" }] }];
+  const w = world({ issues, openPrs });
+  const r = await runDispatch({ root: tmpRoot(), config: { ...config, parallel: 3, wip_cap: 10 }, run: w.run, runStream: w.runStream, now: NOW });
+  assert.deepEqual(r.results.map((x) => x.issue).sort(), [2, 3]);
+  // Only #1 left: the run is idle and says why.
+  const w2 = world({ issues: [issues[0]], openPrs });
+  const idle = await runDispatch({ root: tmpRoot(), config: { ...config, parallel: 3, wip_cap: 10 }, run: w2.run, runStream: w2.runStream, now: NOW });
+  assert.equal(idle.action, "idle");
+  assert.match(idle.skipped.find((x) => x.number === 1).reason, /waits for PR #19 \(both change trading\/risk\/manage\.py\)/);
+});
+
+test("overlap: two builds in one tick that share a file do not both start", async () => {
+  const issues = [ready(1, "Edit lib/core.mjs"), ready(2, "Also edit lib/core.mjs")];
+  const w = world({ issues });
+  const r = await runDispatch({ root: tmpRoot(), config: { ...config, parallel: 3, wip_cap: 10 }, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "built");
+  assert.equal(r.issue, 1);
+});
+
+test("overlap: a running build holds its predicted files", async () => {
+  const { beginWorker } = await import("../lib/state.mjs");
+  const root = tmpRoot();
+  beginWorker(root, 7, { kind: "build", pr: null, title: "t", files: ["lib/core.mjs"] });
+  const w = world({ issues: [ready(1, "Edit lib/core.mjs")] });
+  const r = await runDispatch({ root, config: { ...config, parallel: 3, wip_cap: 10 }, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "idle");
+  assert.match(r.skipped[0].reason, /waits for #7's running build/);
+});
+
+test("overlap: depends-on waits for an open issue and runs once it is closed", async () => {
+  const issues = [ready(1, "Depends on #5. Edit lib/x.mjs")];
+  let w = world({ issues });
+  let r = await runDispatch({ root: tmpRoot(), config: { ...config, parallel: 2, wip_cap: 10 }, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "idle");
+  assert.match(r.skipped[0].reason, /waits for #5 \(depends on\)/);
+  w = world({ issues, issueStates: { 5: "CLOSED" } });
+  r = await runDispatch({ root: tmpRoot(), config: { ...config, parallel: 2, wip_cap: 10 }, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "built");
 });
