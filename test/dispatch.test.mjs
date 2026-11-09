@@ -75,6 +75,9 @@ test("happy path: canary, doing, worktree, agent, push agent branch, PR, @codex 
   assert.ok(idx("claude -p --max-turns 1") < idx("gh issue edit 1 --repo jk/proj --add-label doing"));
   assert.ok(lines.some((l) => l.includes("push --quiet origin HEAD:refs/heads/agent/1-add-a-slugify-helper")));
   assert.ok(!lines.some((l) => / push /.test(l) && /--force/.test(l)), "crew never force-pushes");
+  // Progress and the lesson go to the issue's own log file, never to a shared file.
+  assert.ok(lines.includes("git add -- crew-log/1.md"));
+  assert.ok(!lines.some((l) => /git add -- .*(PROGRESS|LEARNINGS)\.md/.test(l)));
   assert.ok(!lines.some((l) => /push.*refs\/heads\/main/.test(l)));
   const create = w.calls.find((c) => c.line.startsWith("gh pr create"));
   assert.ok(!create.line.includes("--draft"));
@@ -318,7 +321,7 @@ test("conflict sync: only append-only logs conflict -> merged and pushed with no
     return base(cmd, args, o);
   };
   const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
-  assert.equal(r.action, "idle");
+  assert.equal(r.action, "synced");
   assert.equal(w.streams.length, 0);
   assert.ok(w.calls.some((c) => c.line.startsWith("git merge-file --union")));
   assert.ok(w.calls.some((c) => c.line.includes("push --quiet origin HEAD:refs/heads/agent/1-x")));
@@ -656,4 +659,20 @@ test("crew queue retry: resets an issue's counters and relabels it by whether it
   assert.ok(calls.some((c) => c.startsWith("gh issue edit 2 --repo jk/proj --add-label ready --remove-label blocked")));
   // Issue 2 was built before: its rebuild gets a fresh branch name.
   assert.equal(buildBranch("agent/", { number: 2, title: "Y" }, l.issues[2]), "agent/2-y-r2");
+});
+
+test("one run fills every slot: a fix round and new builds start together", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 9: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/9-x", pr: 19, last_push_at: "2026-11-08T08:00:00Z", review_keys: [] } } });
+  const reviews = [{ id: 70, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:00:00Z", body: "P1: off by one" }];
+  // The fake world's \`gh issue view\` returns issues[0], so the PR's issue goes first.
+  const issues = [{ number: 9, title: "Fix me", body: "b", labels: [{ name: "in-review" }], createdAt: "2026-10-30T00:00:00Z", url: "u9" },
+    ...[1, 2].map((n) => ({ number: n, title: `Task ${n}`, body: "b", labels: [{ name: "ready" }], createdAt: `2026-11-0${n}T00:00:00Z`, url: `u${n}` }))];
+  const w = world({ openPrs: [{ number: 19, headRefName: "agent/9-x", url: "u" }], reviews, issues });
+  const cfg3 = { ...config, parallel: 3, wip_cap: 10 };
+  const r = await runDispatch({ root, config: cfg3, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "batch");
+  assert.deepEqual(r.results.map((x) => x.action).sort(), ["built", "built", "fixed"]);
+  assert.equal(w.streams.length, 3);
+  assert.equal(w.calls.filter((c) => c.line.startsWith("claude -p --max-turns 1")).length, 1, "one login check per run");
 });
