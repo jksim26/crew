@@ -865,6 +865,54 @@ test("a fix round where the agent ran and changed nothing marks the findings han
   assert.match(c.input, /no change made\. The finding is already handled/);
 });
 
+test("a draft whose repair round changed nothing is re-tested: clean -> ready for review; not -> the owner, with why", async () => {
+  const seed = () => {
+    const root = tmpRoot();
+    saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: ["draft:h1"], draft_why: "tests failed", draft_tail: "1 failed" } } });
+    return root;
+  };
+  const pr = { number: 12, headRefName: "agent/1-x", url: "u", isDraft: true, headRefOid: "h1" };
+  // The old-style key "draft:h1" was handled already; v2 gives the stuck draft one more look.
+  // 1. The failure was flaky and the work is done: the re-test passes, the PR becomes ready.
+  let root = seed();
+  let w = world({ openPrs: [pr], commits: 0, stream: streamOk({ status: "done", summary: "The failing test is in code this PR does not touch; it passed on rerun.", tests: { command: "pytest x", passed: true } }, 0.3) });
+  let r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "fixed");
+  assert.equal(r.why, "undrafted after a clean re-test");
+  assert.ok(w.calls.some((c) => c.line.startsWith("gh pr ready 12")));
+  assert.ok(w.calls.some((c) => c.line.includes("@codex review")));
+  assert.equal(loadLedger(root).issues[1].draft_why, null);
+  // 2. The agent says something needs a human: the owner's queue, with the agent's reason.
+  root = seed();
+  w = world({ openPrs: [pr], commits: 0, stream: streamOk({ status: "partial", summary: "Docs only.", remaining: "Install VS Build Tools and rustup on the PC (needs UAC)." }, 0.3) });
+  r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "escalated");
+  assert.match(r.why, /Install VS Build Tools and rustup/);
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh pr ready 12")));
+  assert.ok(w.calls.some((c) => c.line.startsWith("gh issue edit 1") && c.line.includes("needs-jk")));
+  // 3. The tests still fail and nothing changed: the owner, never another silent round.
+  root = seed();
+  w = world({ openPrs: [pr], commits: 0, crewTestsFail: true, stream: streamOk({ status: "done", summary: "Unrelated failure." }, 0.3) });
+  r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "escalated");
+  assert.match(r.why, /re-run of the tests still fails/);
+});
+
+test("a push whose client errors after the server took it counts as pushed", async () => {
+  const { pushBranch } = await import("../lib/dispatch.mjs");
+  const calls = [];
+  const mk = (remoteSha) => (cmd, args) => {
+    calls.push(args.join(" "));
+    if (args.includes("push")) return { ok: false, code: null, stdout: "", stderr: "spawnSync git ETIMEDOUT" };
+    if (args[0] === "rev-parse") return { ok: true, stdout: "abc123\n" };
+    if (args[0] === "ls-remote") return { ok: true, stdout: remoteSha ? `${remoteSha}\trefs/heads/agent/1-x\n` : "" };
+    return { ok: true, stdout: "" };
+  };
+  assert.doesNotThrow(() => pushBranch(mk("abc123"), "/wt", "/hooks", "agent/1-x"));
+  assert.throws(() => pushBranch(mk("old999"), "/wt", "/hooks", "agent/1-x"), /ETIMEDOUT/);
+  assert.throws(() => pushBranch(mk(null), "/wt", "/hooks", "agent/1-x"), /ETIMEDOUT/);
+});
+
 test("crew queue retry skips an issue a worker is running on, so the reset is not silently undone", async () => {
   const { beginWorker } = await import("../lib/state.mjs");
   const root = tmpRoot();
