@@ -49,8 +49,9 @@ test("several --at times: launchd array of dicts, Task Scheduler trigger array",
 
 test("windows script: S4U, Limited, IgnoreNew, explicit limit, logs appended", () => {
   const s = windowsScript({ taskName: "proj-dispatch", root: "C:\\code\\proj", args: ["dispatch"], when: { every: 30 }, logFile: "C:\\code\\proj\\.crew\\logs\\dispatch.log", limitMin: 55, node: "C:\\node\\node.exe", bin: "C:\\crew\\bin\\crew" });
-  for (const needle of ["-LogonType S4U", "-RunLevel Limited", "-MultipleInstances IgnoreNew", "-ExecutionTimeLimit (New-TimeSpan -Minutes 55)", "-RepetitionInterval (New-TimeSpan -Minutes 30)", "-TaskPath '\\crew\\'", ">> \"C:\\code\\proj\\.crew\\logs\\dispatch.log\" 2>&1"])
+  for (const needle of ["-LogonType S4U", "-RunLevel Limited", "-MultipleInstances IgnoreNew", "-ExecutionTimeLimit (New-TimeSpan -Minutes 55)", "-RepetitionInterval (New-TimeSpan -Minutes 30)", "-TaskPath '\\crew\\'", "dispatch --log-file \"C:\\code\\proj\\.crew\\logs\\dispatch.log\""])
     assert.ok(s.includes(needle), needle);
+  assert.ok(!s.includes(">>"), "no shell redirect: it would lock the log against overlapping ticks");
   assert.match(windowsScript({ taskName: "t", root: "C:\\r", args: ["brief", "--weekly"], when: { times: [{ hour: 18, minute: 0 }], weekday: 0 }, logFile: "l", limitMin: 30, node: "n", bin: "b" }), /-Weekly -DaysOfWeek Sunday -At '18:00'/);
   assert.match(windowsScript({ taskName: "t", root: "C:\\it's", args: ["brief"], when: { times: [{ hour: 6, minute: 5 }] }, logFile: "l", limitMin: 30, node: "n", bin: "b" }), /-Daily -At '06:05'[\s\S]*/);
   assert.match(windowsScript({ taskName: "t", root: "C:\\it's", args: ["brief"], when: { times: [{ hour: 6, minute: 5 }] }, logFile: "l", limitMin: 30, node: "n", bin: "b" }), /'C:\\it''s'/);
@@ -84,14 +85,31 @@ test("installJob on macOS writes the plist and boots it out then in", () => {
   assert.ok(calls.some((c) => c.startsWith("launchctl bootstrap gui/") && c.endsWith(plan.file)));
 });
 
-test("windows: the cmd line survives cmd's quote stripping and creates the logs folder", async () => {
+test("windows: the cmd line survives cmd's quote stripping and hands crew its own log file", async () => {
   const { windowsScript } = await import("../lib/schedule.mjs");
   const t = windowsScript({ taskName: "p-watch", root: "X:\\Claude\\Claude Trading", args: ["watch"], when: { every: 10 },
     logFile: "X:\\Claude\\Claude Trading\\.crew\\logs\\watch.log", limitMin: 55, node: "C:\\Program Files\\nodejs\\node.exe", bin: "C:\\p\\bin\\crew" });
   const arg = /-Argument '([^']*)'/.exec(t)[1];
-  assert.ok(arg.startsWith('/d /s /c "(if not exist "X:\\Claude\\Claude Trading\\.crew\\logs" mkdir'), arg);
-  assert.ok(arg.includes('& "C:\\Program Files\\nodejs\\node.exe" "C:\\p\\bin\\crew" watch >> '), arg);
-  assert.ok(arg.endsWith('2>&1"'), arg);
+  assert.equal(arg, '/d /s /c ""C:\\Program Files\\nodejs\\node.exe" "C:\\p\\bin\\crew" watch --log-file "X:\\Claude\\Claude Trading\\.crew\\logs\\watch.log""');
+});
+
+test("shared log: many writers append to one file, even while another process has it open", async () => {
+  const { sharedLogWriter } = await import("../lib/cli.mjs");
+  const { spawnSync } = await import("node:child_process");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "crew log ")), "logs", "watch.log");
+  const w = sharedLogWriter(file);
+  w.write("tick 1\n");
+  const held = fs.openSync(file, "a"); // a long-running crew tick's handle
+  const mod = new URL("../lib/cli.mjs", import.meta.url).href;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `const { sharedLogWriter } = await import(${JSON.stringify(mod)}); sharedLogWriter(${JSON.stringify(file)}).write("tick 2\\n");`], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  w.write("tick 3\n");
+  fs.closeSync(held);
+  assert.equal(fs.readFileSync(file, "utf8"), "tick 1\ntick 2\ntick 3\n");
 });
 
 test("windows: the generated cmd line really runs node from a path with spaces", { skip: process.platform !== "win32" }, async () => {
@@ -103,7 +121,8 @@ test("windows: the generated cmd line really runs node from a path with spaces",
   const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "crew win ")), "my project");
   fs.mkdirSync(dir);
   const script = path.join(dir, "hello script.js");
-  fs.writeFileSync(script, "console.log('hello ' + process.argv[2])");
+  // Stands in for crew: it writes to the file named by --log-file, as crew's sharedLogWriter does.
+  fs.writeFileSync(script, "const fs = require('fs'), p = require('path'); const f = process.argv[process.argv.indexOf('--log-file') + 1]; fs.mkdirSync(p.dirname(f), { recursive: true }); fs.appendFileSync(f, 'hello ' + process.argv[2]);");
   const logFile = path.join(dir, ".crew", "logs", "x.log");
   const t = windowsScript({ taskName: "t", root: dir, args: ["watch"], when: { every: 10 }, logFile, limitMin: 5, node: process.execPath, bin: script });
   const arg = /-Argument '([^']*)'/.exec(t)[1].replace(/''/g, "'");
