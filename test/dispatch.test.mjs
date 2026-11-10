@@ -54,7 +54,7 @@ function world(opts = {}) {
     if (line.startsWith("git diff --name-only")) return ok((opts.changed ?? ["lib/text.mjs"]).join("\n") + "\n");
     if (cmd === "git") return ok("");
     if (/run-tests(\.cmd)?$/.test(cmd) || (cmd === "cmd" && /run-tests/.test(line)))
-      return opts.crewTestsFail ? { ok: false, code: 1, stdout: "1 failed, 9 passed", stderr: "" } : ok("10 passed");
+      return opts.crewTestsTimeout ? { ok: false, code: null, timedOut: true, stdout: "", stderr: "" } : opts.crewTestsFail ? { ok: false, code: 1, stdout: "1 failed, 9 passed", stderr: "" } : ok("10 passed");
     return { ok: false, code: 1, stdout: "", stderr: `unexpected ${line}` };
   };
   const streams = [];
@@ -897,6 +897,35 @@ test("a draft whose repair round changed nothing is re-tested: clean -> ready fo
   r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
   assert.equal(r.action, "escalated");
   assert.match(r.why, /re-run of the tests still fails/);
+});
+
+test("a timed-out draft re-test waits and re-tests later; only after every retry is it the owner's", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [], draft_why: "tests timed out", draft_tail: null } } });
+  const pr = { number: 12, headRefName: "agent/1-x", url: "u", isDraft: true, headRefOid: "h1" };
+  const cfg = { ...config, caps: { ...config.caps, fix_rounds: 99, issue_budget_usd: 999 } };
+  const go = (at) => { const w = world({ issues: [{ number: 1, title: "x", body: "b", labels: [{ name: "in-review" }], createdAt: "2026-11-01T00:00:00Z", url: "u1" }], openPrs: [pr], commits: 0, crewTestsTimeout: true, stream: streamOk({ status: "done", summary: "Nothing to change." }, 0.1) });
+    return runDispatch({ root, config: cfg, run: w.run, runStream: w.runStream, now: at }).then((r) => ({ r, w })); };
+  let t = NOW.getTime();
+  let { r, w } = await go(new Date(t));
+  assert.equal(r.action, "retest-later");
+  assert.match(r.why, /timed out .*re-testing in 30 min \(1\/6\)/);
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh issue edit") && c.line.includes("needs-jk")), "a timeout never goes to the owner on the first try");
+  assert.equal(loadLedger(root).issues[1].test_timeouts, 1);
+  // Inside the wait: no round at all.
+  ({ r } = await go(new Date(t + 10 * 60_000)));
+  assert.equal(r.action, "idle");
+  // Each later look gets its own finding id and a longer wait, up to the cap; then the owner.
+  for (let k = 2; k <= 6; k++) {
+    t = Date.parse(loadLedger(root).issues[1].retest_after) + 1000;
+    ({ r } = await go(new Date(t)));
+    assert.equal(r.action, "retest-later", `try ${k}`);
+  }
+  t = Date.parse(loadLedger(root).issues[1].retest_after) + 1000;
+  ({ r, w } = await go(new Date(t)));
+  assert.equal(r.action, "escalated");
+  assert.match(r.why, /timed out 6 times in a row/);
+  assert.ok(w.calls.some((c) => c.line.startsWith("gh issue edit 1") && c.line.includes("needs-jk")));
 });
 
 test("a push whose client errors after the server took it counts as pushed", async () => {
