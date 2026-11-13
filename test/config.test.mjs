@@ -138,10 +138,11 @@ test("resolveCmd quotes a root with spaces, once, and leaves quoted or space-fre
 test("allow_bash accepts command prefixes and refuses dangerous ones", async () => {
   const { validate } = await import("../lib/config.mjs");
   const base = { repo: "a/b", owner_login: "a" };
-  assert.deepEqual(validate({ ...base, allow_bash: ["cargo test", "cargo clippy"] }).filter((m) => m.includes("allow_bash")), []);
+  assert.deepEqual(validate({ ...base, allow_bash: ["cargo test", "cargo clippy", "make lint", "pytest", "npm test"] }).filter((m) => m.includes("allow_bash")), []);
   for (const bad of [["git push"], ["gh pr merge"], ["curl x"], ["rm -rf /"], ["cargo; rm"], "cargo", ["cargo"],
                      ["bash -c"], ["sh -c"], ["python -c"], ["python3 -m"], ["env FOO"], ["xargs cargo"], ["sudo cargo"],
                      ["./run tests"], ["/usr/bin/cargo test"], ["node x"], ["npx something"], ["Python.exe -c"],
-                     ["cargo test | sh"], ["cargo `x`"]])
+                     ["cargo test | sh"], ["cargo `x`"], ["python3.12 -c"], ["busybox sh"], ["npm exec x"], ["pnpm dlx x"],
+                     ["go run x"], ["uv run x"], ["cargo install x"], ["socat x"], ["make"], ["pytest -k"], ["cargo test extra"]])
     assert.ok(validate({ ...base, allow_bash: bad }).some((m) => m.includes("allow_bash")), JSON.stringify(bad));
 });
