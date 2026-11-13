@@ -150,3 +150,8 @@ test("allow_bash accepts command prefixes and refuses dangerous ones", async () 
                      ["pytest -o"], ["pytest --override-ini"], ["mypy --config-file"], ["cargo test -Zx"], ["go test --toolexec"], ["make lint -E"]])
     assert.ok(validate({ ...base, allow_bash: bad }).some((m) => m.includes("allow_bash")), JSON.stringify(bad));
 });
+
+test("session_quiet_min is a whole number of minutes from 10 to 1440", () => {
+  for (const bad of [9, 1441, 30.5, "120"]) assert.ok(validate({ ...base, session_quiet_min: bad }).some((s) => s.includes('"session_quiet_min" must be an integer from 10 to 1440')), String(bad));
+  assert.deepEqual(validate({ ...base, session_quiet_min: 120 }), []);
+});

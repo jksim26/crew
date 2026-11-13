@@ -178,9 +178,9 @@ test("pm agent file parses and stays read-only", () => {
   assert.doesNotMatch(fm, /Edit|Write|Bash/);
 });
 
-test("claudeEnv removes only the API key (no token on this machine)", () => {
+test("claudeEnv removes only the API key and marks the run as crew's (no token on this machine)", () => {
   const cfg = fs.mkdtempSync(path.join(os.tmpdir(), "crew-nosecrets-"));
-  assert.deepEqual(claudeEnv({ ANTHROPIC_API_KEY: "k", HOME: "/h", XDG_CONFIG_HOME: cfg, APPDATA: cfg }), { HOME: "/h", XDG_CONFIG_HOME: cfg, APPDATA: cfg });
+  assert.deepEqual(claudeEnv({ ANTHROPIC_API_KEY: "k", HOME: "/h", XDG_CONFIG_HOME: cfg, APPDATA: cfg }), { HOME: "/h", XDG_CONFIG_HOME: cfg, APPDATA: cfg, CREW_AGENT: "1" });
 });
 
 test("render: STATUS.md is exactly 5 single lines; brief has every section", () => {
