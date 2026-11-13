@@ -150,3 +150,14 @@ test("allow_bash accepts command prefixes and refuses dangerous ones", async () 
                      ["pytest -o"], ["pytest --override-ini"], ["mypy --config-file"], ["cargo test -Zx"], ["go test --toolexec"], ["make lint -E"]])
     assert.ok(validate({ ...base, allow_bash: bad }).some((m) => m.includes("allow_bash")), JSON.stringify(bad));
 });
+
+test("stuck and PM caps: defaults, validation", () => {
+  const c = normalize(base);
+  assert.equal(c.stuck, "pm");
+  assert.equal(c.caps.pm_agains, 2);
+  assert.equal(c.caps.pm_issue_budget_usd, 30);
+  assert.equal(normalize({ ...base, stuck: "owner" }).stuck, "owner");
+  assert.ok(validate({ ...base, stuck: "boss" }).some((s) => s.includes('"stuck"')));
+  assert.ok(validate({ ...base, caps: { pm_agains: 1.5 } }).some((s) => s.includes("caps.pm_agains") && s.includes("whole number")));
+  assert.ok(validate({ ...base, caps: { issue_budget_usd: 20, pm_issue_budget_usd: 10 } }).some((s) => s.includes("pm_issue_budget_usd")));
+});
