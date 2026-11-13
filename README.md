@@ -90,7 +90,8 @@ issue that cites no path runs unguarded; a path cited only for reference also co
 until #12 is closed. Shared logs (`PROGRESS.md`, `LEARNINGS.md`, `crew-log/`, `wiki/log.md`) never
 count as overlap; add more with `"overlap_exempt": ["docs/changelog.md", "notes/"]`. Commands the dev
 worker may run beyond `test_cmd` (a compiler, a linter) go in `"allow_bash": ["cargo test", "cargo clippy"]`;
-`git push`, `gh`, `curl`, `wget` and `rm` are refused there and stay denied. A waiting
+each entry is two or more plain words (no paths); shells, interpreters, wrappers (`env`, `xargs`, `sudo`)
+and network or git tools are refused, and the deny list still applies. A waiting
 issue shows as skipped, with the PR or issue it waits for.
 
 `watch` is the usual way to run dev. Every 10 minutes it does the plain checks (lock, lease,
