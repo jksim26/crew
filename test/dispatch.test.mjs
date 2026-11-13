@@ -44,8 +44,10 @@ function world(opts = {}) {
     if (line.startsWith("gh pr view") && line.includes("--json state") && opts.prState) return ok(JSON.stringify({ state: opts.prState }));
     if (line.startsWith("gh pr create")) return ok("https://github.com/jk/proj/pull/12\n");
     if (cmd === "gh") return ok("");
+    if (line.startsWith("git worktree list")) return ok(opts.worktrees ?? "");
     if (line.startsWith("git worktree add")) {
       const wt = args[args.indexOf("-b") + 2];
+      opts.onWorktreeAdd?.(wt);
       fs.mkdirSync(wt, { recursive: true });
       return ok("");
     }
@@ -1055,4 +1057,24 @@ test("overlap: depends-on waits for an open issue and runs once it is closed", a
   w = world({ issues, issueStates: { 5: "CLOSED" } });
   r = await runDispatch({ root: tmpRoot(), config: { ...config, parallel: 2, wip_cap: 10 }, run: w.run, runStream: w.runStream, now: NOW });
   assert.equal(r.action, "built");
+});
+
+test("cleanup: a tick removes a dead run's worktree; a dry run removes nothing", async () => {
+  const dead = "worktree /r\nHEAD a\n\nworktree /tmp/crew-dev-dead1/wt\nHEAD b\nbranch refs/heads/crew-work/4-1\n";
+  const dry = world({ worktrees: dead });
+  await runDispatch({ root: tmpRoot(), config, run: dry.run, runStream: dry.runStream, now: NOW, dryRun: true });
+  assert.ok(!dry.calls.some((c) => c.line === "git worktree remove --force /tmp/crew-dev-dead1/wt"));
+  const root = tmpRoot();
+  const w = world({ worktrees: dead });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.ok(w.calls.some((c) => c.line === "git worktree remove --force /tmp/crew-dev-dead1/wt"));
+  assert.match(fs.readFileSync(path.join(root, ".crew", "dispatch.log"), "utf8"), /"action":"cleanup"/);
+});
+
+test("cleanup: a worker records its worktree before creating it", async () => {
+  const root = tmpRoot();
+  let seen = null;
+  const w = world({ onWorktreeAdd: (wt) => { seen = [wt, JSON.parse(fs.readFileSync(path.join(root, ".crew", "workers", "1.json"), "utf8")).wt]; } });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.ok(seen && seen[0] === seen[1], `worker file wt ${seen?.[1]} != ${seen?.[0]}`);
 });

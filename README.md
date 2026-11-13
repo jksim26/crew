@@ -252,7 +252,8 @@ runs under its own worker file, `.crew/workers/<issue>.json`, which records the 
 start time and cost so far. Every `watch` tick tops up whatever slots are free (`parallel` minus running
 workers), so a slow build never holds up the rest. See them with `crew workers`, or in the
 **⚙️ Workers** section at the top of the Slack board. `crew stop` ends them all. A file left by a dead
-process is cleaned up on the next tick. Ledger writes from parallel workers merge, so they never
+process is cleaned up on the next tick, and so are the worktrees, temp folders and branches of runs
+that died (a reboot, a crash), which can hold gigabytes of build output. Ledger writes from parallel workers merge, so they never
 overwrite each other.
 
 1. **Plain checks, with no model call:** the lock, your lease, the daily budget, and the queue.
