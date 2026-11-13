@@ -92,8 +92,8 @@ count as overlap; add more with `"overlap_exempt": ["docs/changelog.md", "notes/
 worker may run beyond `test_cmd` (a compiler, a linter) go in `"allow_bash": ["cargo test", "cargo clippy"]`;
 entries come from a fixed list of build/test tools and their build/test subcommands (`ALLOW_BASH_TOOLS` in
 `lib/config.mjs`) and each is granted as that EXACT command, so write the flags you need into the entry
-(`"cargo test --manifest-path rust/Cargo.toml"`). Package runners, `npm run` without a script name, and flags
-that hand the tool another program or config (`--config`, `-toolexec`, `-f`) are refused. A waiting
+(`"cargo test --manifest-path rust/Cargo.toml"`). Package runners, `npm run` without a script name, and any flag
+outside a short allowlist (`-q`, `--release`, `--check`, `--manifest-path <relative Cargo.toml>`, ...) are refused. A waiting
 issue shows as skipped, with the PR or issue it waits for.
 
 `watch` is the usual way to run dev. Every 10 minutes it does the plain checks (lock, lease,
