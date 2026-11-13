@@ -224,7 +224,8 @@ test("codex findings after the last push trigger fix rounds up to caps.fix_round
   Object.assign(l.issues[1], { attempts: 2, fix_rounds: 3 });
   saveLedger(root, l);
   const w5 = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews: [...more, { id: 80, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:50:00Z", body: "P1: nope" }] });
-  const r5 = await runDispatch({ root, config, run: w5.run, runStream: w5.runStream, now: NOW });
+  // With stuck: "owner" (the PM path has tests of its own below).
+  const r5 = await runDispatch({ root, config: { ...config, stuck: "owner" }, run: w5.run, runStream: w5.runStream, now: NOW });
   assert.equal(r5.action, "escalated");
   const c5 = w5.calls.find((c) => c.line.startsWith("gh issue comment 1"));
   assert.ok(w5.calls.some((c) => c.line.startsWith("gh issue edit 1 --repo jk/proj --add-label needs-jk")));
@@ -1055,4 +1056,106 @@ test("overlap: depends-on waits for an open issue and runs once it is closed", a
   w = world({ issues, issueStates: { 5: "CLOSED" } });
   r = await runDispatch({ root: tmpRoot(), config: { ...config, parallel: 2, wip_cap: 10 }, run: w.run, runStream: w.runStream, now: NOW });
   assert.equal(r.action, "built");
+});
+
+// ---- the PM decides stuck PRs (stuck: "pm", the default) ----
+const P1 = (id, at, body) => ({ id, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: at, body });
+const stuckPr = (o = {}) => ({ number: 12, headRefName: "agent/1-x", url: "https://github.com/jk/proj/pull/12", isDraft: false, mergeable: "MERGEABLE", headRefOid: "sha12", statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], files: [{ path: "lib/a.mjs" }], ...o });
+function stuckLedger(root, extra = {}) {
+  saveLedger(root, { days: {}, issues: { 1: { cost: 5, attempts: 2, fix_rounds: 3, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [], ...extra } } });
+}
+const lastFinding = [P1(80, "2026-11-08T09:50:00Z", "P1: nope")];
+const decisionStream = (decision, cost = 0.4) => (o) => ({ code: 0, signal: null, timedOut: null, stderr: "",
+  stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: JSON.stringify(decision), total_cost_usd: cost }) });
+const isDecide = (s) => s.args.includes("--tools");
+
+test("stuck pm: rounds run out on the last attempt -> PM decision queued, not needs-jk", async () => {
+  const root = tmpRoot();
+  stuckLedger(root);
+  const w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "pm-queued");
+  assert.equal(w.streams.length, 0);
+  assert.ok(!w.calls.some((c) => c.line.includes("--add-label needs-jk")));
+  const e = loadLedger(root).issues[1];
+  assert.equal(e.pm_pending.pr, 12);
+  assert.deepEqual(e.pm_pending.allowed, ["again", "merge", "owner"]);
+  assert.match(e.pm_pending.findings[0].body, /P1: nope/);
+});
+
+test("stuck pm: drafts, red checks and protected files take merge off the table", async () => {
+  const cases = [
+    [stuckPr({ isDraft: true }), ["again", "owner"]],
+    [stuckPr({ statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }, { name: "lint", status: "IN_PROGRESS", conclusion: null }] }), ["again", "owner"]],
+    [stuckPr({ statusCheckRollup: [] }), ["again", "owner"]],
+    [stuckPr({ files: [{ path: "lib/secret/key.mjs" }] }), ["again", "owner"]],
+  ];
+  for (const [p, allowed] of cases) {
+    const root = tmpRoot();
+    stuckLedger(root);
+    const w = world({ openPrs: [p], reviews: lastFinding });
+    assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "pm-queued");
+    assert.deepEqual(loadLedger(root).issues[1].pm_pending.allowed, allowed);
+  }
+});
+
+test("stuck pm: go-agains used up -> merge or owner only; nothing left -> needs-jk", async () => {
+  let root = tmpRoot();
+  stuckLedger(root, { pm_agains: 2 });
+  let w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "pm-queued");
+  assert.deepEqual(loadLedger(root).issues[1].pm_pending.allowed, ["merge", "owner"]);
+
+  root = tmpRoot();
+  stuckLedger(root, { pm_agains: 2 });
+  w = world({ openPrs: [stuckPr({ isDraft: true })], reviews: lastFinding });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "escalated");
+  assert.ok(w.calls.some((c) => c.line.startsWith("gh issue edit 1 --repo jk/proj --add-label needs-jk")));
+  assert.ok(!loadLedger(root).issues[1].pm_pending);
+});
+
+test("stuck pm: the $30 hard stop goes to the owner with no PM run", async () => {
+  const root = tmpRoot();
+  stuckLedger(root, { cost: 30, pm_agains: 1, fix_rounds: 3 });
+  const w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "escalated");
+  assert.equal(w.streams.length, 0);
+  const c = w.calls.find((x) => x.line.startsWith("gh issue comment 1"));
+  assert.match(c.input, /\$30/);
+});
+
+test("stuck owner: today's needs-jk path, no PM fields", async () => {
+  const root = tmpRoot();
+  stuckLedger(root);
+  const w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", test_cmd: "npm test", protected_paths: ["lib/secret/*"], stuck: "owner" });
+  const r = await runDispatch({ root, config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "escalated");
+  assert.ok(!("pm_pending" in loadLedger(root).issues[1]));
+});
+
+test("stuck pm: a queued decision runs as its own job; the owner's queue is left alone", async () => {
+  const pending = { pr: 12, findings: [{ id: "r80", author: "codex", body: "P1: nope" }], allowed: ["again", "merge", "owner"] };
+  let root = tmpRoot();
+  stuckLedger(root, { pm_pending: pending, review_keys: ["r80"] });
+  let w = world({ openPrs: [stuckPr()], reviews: [], stream: decisionStream({ decision: "owner", reason: "scope call", owner_question: "Ship without the cache?" }) });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(w.streams.filter(isDecide).length, 1);
+  assert.match(w.streams[0].o.input, /P1: nope/);
+
+  root = tmpRoot();
+  stuckLedger(root, { pm_pending: pending, review_keys: ["r80"] });
+  w = world({ openPrs: [stuckPr()], reviews: [], needsJk: [{ number: 1 }] });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(w.streams.length, 0);
+});
+
+test("after a PM go-again, the issue budget is the PM cap, not issue_budget_usd", async () => {
+  const root = tmpRoot();
+  stuckLedger(root, { pm_agains: 1, cost: 16, fix_rounds: 0 });
+  const w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "fixed");
 });
