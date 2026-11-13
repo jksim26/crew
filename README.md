@@ -88,7 +88,9 @@ starts later from the merged branch, with no conflict round. The files an issue 
 from a `Writes: path/a.py, path/b.py` line in its body, or else from every path the body cites. An
 issue that cites no path runs unguarded; a path cited only for reference also counts, so use `Writes:` to narrow it. `Depends on #12` (or `blocked by #12`) makes a build wait
 until #12 is closed. Shared logs (`PROGRESS.md`, `LEARNINGS.md`, `crew-log/`, `wiki/log.md`) never
-count as overlap; add more with `"overlap_exempt": ["docs/changelog.md", "notes/"]`. A waiting
+count as overlap; add more with `"overlap_exempt": ["docs/changelog.md", "notes/"]`. Commands the dev
+worker may run beyond `test_cmd` (a compiler, a linter) go in `"allow_bash": ["cargo test", "cargo clippy"]`;
+`git push`, `gh`, `curl`, `wget` and `rm` are refused there and stay denied. A waiting
 issue shows as skipped, with the PR or issue it waits for.
 
 `watch` is the usual way to run dev. Every 10 minutes it does the plain checks (lock, lease,
