@@ -241,3 +241,89 @@ test("rollbackUpdate: back to previous, failed sha marked bad", () => {
   assert.deepEqual(r, { ok: true, to: OLD });
   assert.deepEqual([m.state().current, m.state().bad], [OLD, [NEW]]);
 });
+
+// ---- setup, status, exit codes, doctor checks --------------------------------------------------
+import { setupUpdate, updateStatus, updateExit, updateChecks } from "../lib/update.mjs";
+import { launchdPlist } from "../lib/schedule.mjs";
+
+function setupWorld() {
+  const dir = tmp();
+  const env = envFor(dir);
+  const home = path.join(dir, "home");
+  const la = path.join(home, "Library", "LaunchAgents");
+  fs.mkdirSync(la, { recursive: true });
+  fs.writeFileSync(path.join(la, "dev.crew.proj-watch.plist"), launchdPlist({ label: "dev.crew.proj-watch", root: path.join(dir, "proj"), args: ["watch"], when: { every: 10 }, envPath: "/bin", logFile: "/l", node: "/n/node", bin: "/old/crew/bin/crew" }));
+  const rt = runnerDir(env, "darwin");
+  const s = { marketplace: "/Users/x/code/crew", dirty: false, branch: "main" };
+  const calls = [];
+  const ok = (stdout = "") => ({ ok: true, code: 0, stdout, stderr: "" });
+  const run = (cmd, args) => {
+    const line = `${cmd} ${args.join(" ")}`;
+    calls.push(line);
+    if (cmd === "git" && args[0] === "clone") { fs.mkdirSync(path.join(args[2], "bin"), { recursive: true }); fs.writeFileSync(path.join(args[2], "bin", "crew"), ""); return ok(); }
+    if (cmd === "git" && args[0] === "symbolic-ref") return ok(`${s.branch}\n`);
+    if (cmd === "git" && args[0] === "status") return ok(s.dirty ? " M x\n" : "");
+    if (cmd === "git" && args[0] === "rev-parse") return ok("c".repeat(40) + "\n");
+    if (cmd === "claude" && args.join(" ") === "plugin marketplace list --json") return ok(JSON.stringify([{ name: "crew", source: "directory", path: s.marketplace }]));
+    if (cmd === "claude" && args[1] === "marketplace" && args[2] === "add") { s.marketplace = args[3]; return ok(); }
+    if (cmd === "id") return ok("501\n");
+    return ok();
+  };
+  const go = () => setupUpdate({ env, platform: "darwin", run, origin: "git@github.com:jk/crew.git", home });
+  return { dir, env, home, la, rt, s, calls, run, go };
+}
+
+test("setupUpdate: fresh machine", () => {
+  const w = setupWorld();
+  const r = w.go();
+  assert.deepEqual(r.steps.map((x) => x.done), ["made", "made", "made", "made", "made"]);
+  assert.ok(w.calls.includes(`git clone git@github.com:jk/crew.git ${w.rt}`));
+  const mk = ["claude plugin marketplace remove crew", `claude plugin marketplace add ${w.rt}`, "claude plugin install crew@crew"].map((c) => w.calls.indexOf(c));
+  assert.ok(mk.every((i) => i >= 0) && mk[0] < mk[1] && mk[1] < mk[2], w.calls.join("\n"));
+  assert.ok(fs.readFileSync(path.join(w.la, "dev.crew.proj-watch.plist"), "utf8").includes(`<string>${path.join(w.rt, "bin", "crew")}</string>`));
+  assert.ok(fs.existsSync(path.join(w.la, "dev.crew.update.plist")));
+  assert.equal(readUpdateState(w.env, "darwin").current, "c".repeat(40));
+});
+
+test("setupUpdate: re-run is safe", () => {
+  const w = setupWorld();
+  w.go();
+  const n = w.calls.length;
+  assert.deepEqual(w.go().steps.map((x) => x.done), ["already", "already", "already", "already", "already"]);
+  assert.ok(!w.calls.slice(n).some((c) => c.startsWith("git clone") || c.includes("marketplace add") || c.startsWith("launchctl bootstrap")));
+});
+
+test("setupUpdate: refuses a dirty runner", () => {
+  const w = setupWorld();
+  w.go();
+  w.s.dirty = true;
+  assert.throws(() => w.go(), /runner .* has local changes/);
+});
+
+test("updateExit: failures the scheduler should show exit 1", () => {
+  for (const o of ["failed", "rolled-back", "dirty"]) assert.equal(updateExit(o), 1, o);
+  for (const o of ["updated", "current", "waiting", "busy", "off", "bad", "temporary"]) assert.equal(updateExit(o), 0, o);
+});
+
+test("updateStatus: auto-update off and on", () => {
+  const w = setupWorld();
+  setAutoUpdate(false, { env: w.env, platform: "darwin" });
+  assert.match(updateStatus({ env: w.env, platform: "darwin", run: w.run }), /auto-update off/);
+  setAutoUpdate(true, { env: w.env, platform: "darwin" });
+  const s = updateStatus({ env: w.env, platform: "darwin", run: w.run });
+  assert.match(s, /auto-update on/);
+  assert.match(s, /runner\s+not set up \(run: crew update setup\)/);
+});
+
+test("updateChecks: warns when jobs run outside the runner", () => {
+  const w = setupWorld();
+  const checks = updateChecks({ env: w.env, platform: "darwin", run: w.run, home: w.home });
+  const runner = checks.find((c) => c.name === "runner");
+  assert.equal(runner.status, "warn");
+  assert.match(runner.detail, /crew update setup/);
+  assert.ok(checks.every((c) => c.status !== "fail"));
+  w.go();
+  const after = updateChecks({ env: w.env, platform: "darwin", run: w.run, home: w.home });
+  assert.equal(after.find((c) => c.name === "runner").status, "ok");
+  assert.equal(after.find((c) => c.name === "plugin source").status, "ok");
+});

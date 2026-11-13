@@ -130,3 +130,11 @@ test("repoFromRemote handles ssh, https and .git", () => {
   assert.equal(repoFromRemote("https://github.com/jk/proj.git/"), "jk/proj");
   assert.equal(repoFromRemote("https://gitlab.com/jk/proj"), null);
 });
+
+test("doctor: warns when jobs run outside the runner", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-doc-"));
+  const { checks } = doctor({ cwd: tmpRepo(cfg), env: { ...env, XDG_DATA_HOME: dir }, run: fakeRun(), nodeVersion: "24.1.0", home: dir, platform: "darwin" });
+  const runner = checks.find((c) => c.name === "runner");
+  assert.equal(runner.status, "warn");
+  assert.match(runner.detail, /crew update setup/);
+});
