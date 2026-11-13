@@ -416,6 +416,14 @@ test("testCmdBase lets the agent run single test files without opening the inter
   assert.ok(!p.allowed.some((x) => x === "Bash(/py:*)"));
 });
 
+test("allow_bash adds the project's own build/test commands, and nothing dangerous validates", () => {
+  const p = agentPermissions(normalize({ repo: "a/b", owner_login: "a", test_cmd: "npm test",
+    allow_bash: ["cargo test", "cargo clippy", "cargo fmt"] }));
+  for (const c of ["cargo test", "cargo clippy", "cargo fmt"]) assert.ok(p.allowed.includes(`Bash(${c}:*)`), c);
+  assert.ok(p.disallowed.includes("Bash(git push:*)"));
+  assert.ok(!agentPermissions(normalize({ repo: "a/b", owner_login: "a" })).allowed.some((x) => x.startsWith("Bash(cargo")));
+});
+
 test("reconcile closes the issue of a merged agent PR and blocks one closed unmerged", async () => {
   const { reconcile } = await import("../lib/dispatch.mjs");
   const root = tmpRoot();

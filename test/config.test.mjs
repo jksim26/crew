@@ -134,3 +134,11 @@ test("resolveCmd quotes a root with spaces, once, and leaves quoted or space-fre
   assert.equal(resolveCmd('"${root}/.venv/bin/python" -m pytest', "/a b"), '"/a b/.venv/bin/python" -m pytest');
   assert.equal(resolveCmd("${root}/.venv/bin/python -m pytest", "/ab"), "/ab/.venv/bin/python -m pytest");
 });
+
+test("allow_bash accepts command prefixes and refuses dangerous ones", async () => {
+  const { validate } = await import("../lib/config.mjs");
+  const base = { repo: "a/b", owner_login: "a" };
+  assert.deepEqual(validate({ ...base, allow_bash: ["cargo test", "cargo clippy"] }).filter((m) => m.includes("allow_bash")), []);
+  for (const bad of [["git push"], ["gh pr merge"], ["curl x"], ["rm -rf /"], ["cargo; rm"], "cargo"])
+    assert.ok(validate({ ...base, allow_bash: bad }).some((m) => m.includes("allow_bash")), JSON.stringify(bad));
+});
