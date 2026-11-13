@@ -152,11 +152,9 @@ test("session-hook: bad stdin exits 0 silently", async () => {
 
 test("session-hook: an error is logged in the repo, never shown", async () => {
   const root = repo();
-  fs.mkdirSync(path.join(root, ".crew", "sessions"), { recursive: true });
-  fs.writeFileSync(path.join(root, ".crew", "sessions", "s2.json"), "{}"); // a file with no files list
-  fs.chmodSync(path.join(root, ".crew", "sessions"), 0o500); // the write fails
+  fs.mkdirSync(path.join(root, ".crew"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".crew", "sessions"), ""); // a file where the folder should be: every OS fails the write
   const r = await cli(["session-hook", "UserPromptSubmit"], JSON.stringify({ session_id: "s2", cwd: root }));
-  fs.chmodSync(path.join(root, ".crew", "sessions"), 0o700);
   assert.deepEqual([r.code, r.out, r.err], [0, "", ""]);
   assert.match(fs.readFileSync(path.join(root, ".crew", "logs", "session-hook.log"), "utf8"), /"event":"UserPromptSubmit"/);
 });
@@ -197,7 +195,8 @@ test("hooks.json is valid and covers the four events", () => {
 
 test("crew-hook never exits non-zero, even when crew itself fails to load", async () => {
   const { spawnSync } = await import("node:child_process");
-  const here = path.dirname(new URL(import.meta.url).pathname);
+  const { fileURLToPath } = await import("node:url");
+  const here = path.dirname(fileURLToPath(import.meta.url));
   const fake = fs.mkdtempSync(path.join(os.tmpdir(), "crew-hook-"));
   fs.mkdirSync(path.join(fake, "bin"));
   fs.mkdirSync(path.join(fake, "lib"));
