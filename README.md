@@ -5,10 +5,10 @@ team's memory lives in files and GitHub, not in long-running chats.
 
 | Who | What they do |
 |---|---|
-| **PM** (reads only) | Writes a daily brief in plain language plus a 5-line `STATUS.md`; a Sunday week in review |
+| **PM** (reads only) | Writes a daily brief in plain language plus a 5-line `STATUS.md`; a Sunday week in review; decides stuck PRs (go again, merge, or you) |
 | **Dev** (headless) | Takes one `ready` GitHub issue, builds it in a throwaway worktree, commits locally, exits |
 | **Dispatcher** (a plain script) | Decides if there is work, runs dev under hard caps, pushes `agent/*`, opens the PR |
-| **Codex** | Reviews PRs; up to 3 automatic fix rounds (`caps.fix_rounds`), then one automatic rebuild that starts from the open findings; only then the issue is `needs-jk` for you |
+| **Codex** | Reviews PRs; up to 3 automatic fix rounds (`caps.fix_rounds`), then one automatic rebuild that starts from the open findings; then the PM decides (`stuck: "pm"`) |
 | **You** | Mark issues `ready`, merge PRs, make the calls the brief asks for |
 | **Slack** (optional) | A pinned board per project (ready / doing / in review / blocked / waiting for you) plus short news lines; any bot, e.g. Grok, can read it |
 
@@ -279,7 +279,19 @@ overwrite each other.
      (one repair round per head; a repaired draft is marked ready for review).
    Build attempts do not limit fix rounds. When `caps.fix_rounds` is used up, crew closes the PR and
    queues one fresh build (on a new `-r<n>` branch) whose prompt carries the unresolved findings;
-   with no attempts left the issue goes to `needs-jk` with the findings.
+   with no attempts left, the PM decides (`stuck: "pm"`, the default; `"owner"` sends it to
+   `needs-jk` as before). crew runs the PM once on the PR, its diff and the open findings, and
+   carries out its answer:
+   - **again**: the PM's direction goes into the dev's next fix round; the PR gets
+     `caps.fix_rounds` new rounds. At most `caps.pm_agains` (2) per issue.
+   - **merge**: crew re-checks the live PR and merges it over the open findings. Never for a
+     protected path, a `never-auto-merge` PR, a draft, a PR with checks not all green, or a PR
+     with 100+ files; those go to `needs-jk`.
+   - **owner**: `needs-jk` with the PM's question.
+   Every decision is a `PM: ...` comment on the PR and a Slack news line. An issue that reaches
+   `caps.pm_issue_budget_usd` ($30) goes to `needs-jk` with no PM run.
+   **Note:** `stuck: "pm"` lets crew merge even when `merge` is `null`. Set `"stuck": "owner"` to
+   keep every stuck PR for yourself.
 3. **Conflict sync.** An agent PR that conflicts with the default branch is merged up to date.
    Conflicts only in `PROGRESS.md` / `LEARNINGS.md` are union-merged with no model; real conflicts
    get one model merge round. `caps.sync_rounds` (default 2) per PR, then `needs-jk`.
@@ -321,7 +333,9 @@ overwrite each other.
   "test_cmd": "npm test",
   "wip_cap": 2,
   "caps": { "max_turns": 60, "max_budget_usd": 5, "wall_min": 40, "idle_min": 10,
-            "issue_budget_usd": 15, "issue_attempts": 2, "fix_rounds": 3, "daily_budget_usd": 25 },
+            "issue_budget_usd": 15, "issue_attempts": 2, "fix_rounds": 3, "daily_budget_usd": 25,
+            "pm_agains": 2, "pm_issue_budget_usd": 30 },
+  "stuck": "pm",
   "brief": { "sources": ["docs/log.md"], "deliver": "pr" },
   "roles": ["trade", { "name": "ops", "memory": "docs/roles/ops.md" }],
   "slack": { "channel": "C0123ABCD", "board": true, "news": true },

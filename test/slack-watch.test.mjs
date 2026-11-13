@@ -469,6 +469,14 @@ test("notifyOwner: @mentions every commander in the project channel; no channel 
   assert.match((await notifyOwner({ config: {}, text: "x" })).why, /no slack channel/);
 });
 
+test("dispatchNews: the PM's decisions on stuck PRs", () => {
+  const config = { repo: "jk/proj" };
+  assert.match(dispatchNews({ action: "pm-queued", issue: 4 }, config), /the PM is deciding/);
+  assert.match(dispatchNews({ action: "pm-again", issue: 4, why: "only the null check is real" }, config), /PM sent .* back.*only the null check is real/);
+  assert.match(dispatchNews({ action: "pm-merged", issue: 4, pr: 12, why: "false alarm" }, config), /PM merged .*false alarm/);
+  assert.match(dispatchNews({ action: "pm-owner", issue: 4, why: "scope call" }, config), /needs-jk.*scope call/);
+});
+
 test("board: sessions section after workers", () => {
   const cols = collectBoard(config, ghRun(issues));
   const sessions = [{ id: "s1", host: "Mac", machine: "mac", cwd: "/x/proj", worktree: null, started: "2026-11-08T11:18:00Z", updated: "2026-11-08T11:57:00Z", files: ["a", "b"] }];

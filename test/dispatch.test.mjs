@@ -37,12 +37,16 @@ function world(opts = {}) {
     if (line.startsWith("gh api --paginate")) return ok(JSON.stringify([[{ event: "labeled", label: { name: "ready" }, actor: { login: "jk" } }]]));
     if (line.startsWith("gh api repos/jk/proj/pulls/") && line.includes("/reviews")) return ok(JSON.stringify(opts.reviews ?? []));
     if (line.startsWith("gh api repos/jk/proj/pulls/") && line.includes("/comments")) return ok("[]");
-    if (line.startsWith("gh api repos/jk/proj/issues/") && line.includes("/comments")) return ok("[]");
+    if (line.startsWith("gh api repos/jk/proj/issues/") && line.includes("/comments")) return ok(JSON.stringify(typeof opts.issueComments === "function" ? opts.issueComments() : opts.issueComments ?? []));
     if (line.startsWith("gh issue view") && line.endsWith("--json state")) return ok(JSON.stringify({ state: (opts.issueStates ?? {})[args[2]] ?? "OPEN" }));
-    if (line.startsWith("gh issue view") && line.includes("labels") && !line.includes("title")) return ok(JSON.stringify({ labels: [{ name: "ready" }] }));
+    if (line.startsWith("gh issue view") && line.includes("labels") && !line.includes("title")) return ok(JSON.stringify({ labels: (opts.issueLabels ?? ["ready"]).map((name) => ({ name })) }));
     if (line.startsWith("gh issue view")) return ok(JSON.stringify(issues[0]));
     if (line.startsWith("gh pr view") && line.includes("--json state") && opts.prState) return ok(JSON.stringify({ state: opts.prState }));
     if (line.startsWith("gh pr create")) return ok("https://github.com/jk/proj/pull/12\n");
+    if (line.startsWith("gh pr view") && opts.prView) return ok(JSON.stringify(opts.prView));
+    if (line.startsWith("gh pr diff")) return ok(opts.diff ?? "diff --git a/lib/a.mjs b/lib/a.mjs\n+x\n");
+    if (line.startsWith("gh pr comment") && opts.commentFail) return { ok: false, code: 1, stdout: "", stderr: opts.commentFail };
+    if (line.startsWith("gh pr merge") && opts.mergeFail) return { ok: false, code: 1, stdout: "", stderr: opts.mergeFail };
     if (cmd === "gh") return ok("");
     if (line.startsWith("git worktree list")) { if (opts.worktreeListThrows) throw new Error("EPERM"); return ok(opts.worktrees ?? ""); }
     if (line.startsWith("git worktree add")) {
@@ -226,7 +230,8 @@ test("codex findings after the last push trigger fix rounds up to caps.fix_round
   Object.assign(l.issues[1], { attempts: 2, fix_rounds: 3 });
   saveLedger(root, l);
   const w5 = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], reviews: [...more, { id: 80, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: "2026-11-08T09:50:00Z", body: "P1: nope" }] });
-  const r5 = await runDispatch({ root, config, run: w5.run, runStream: w5.runStream, now: NOW });
+  // With stuck: "owner" (the PM path has tests of its own below).
+  const r5 = await runDispatch({ root, config: { ...config, stuck: "owner" }, run: w5.run, runStream: w5.runStream, now: NOW });
   assert.equal(r5.action, "escalated");
   const c5 = w5.calls.find((c) => c.line.startsWith("gh issue comment 1"));
   assert.ok(w5.calls.some((c) => c.line.startsWith("gh issue edit 1 --repo jk/proj --add-label needs-jk")));
@@ -1057,6 +1062,259 @@ test("overlap: depends-on waits for an open issue and runs once it is closed", a
   w = world({ issues, issueStates: { 5: "CLOSED" } });
   r = await runDispatch({ root: tmpRoot(), config: { ...config, parallel: 2, wip_cap: 10 }, run: w.run, runStream: w.runStream, now: NOW });
   assert.equal(r.action, "built");
+});
+
+// ---- the PM decides stuck PRs (stuck: "pm", the default) ----
+const P1 = (id, at, body) => ({ id, user: { login: "chatgpt-codex-connector[bot]" }, submitted_at: at, body });
+const stuckPr = (o = {}) => ({ number: 12, headRefName: "agent/1-x", url: "https://github.com/jk/proj/pull/12", isDraft: false, mergeable: "MERGEABLE", headRefOid: "sha12", statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], files: [{ path: "lib/a.mjs" }], ...o });
+function stuckLedger(root, extra = {}) {
+  saveLedger(root, { days: {}, issues: { 1: { cost: 5, attempts: 2, fix_rounds: 3, branch: "agent/1-x", pr: 12, last_push_at: "2026-11-08T08:00:00Z", review_keys: [], ...extra } } });
+}
+const lastFinding = [P1(80, "2026-11-08T09:50:00Z", "P1: nope")];
+const decisionStream = (decision, cost = 0.4) => (o) => ({ code: 0, signal: null, timedOut: null, stderr: "",
+  stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: JSON.stringify(decision), total_cost_usd: cost }) });
+const isDecide = (s) => s.args.includes("--tools");
+
+test("stuck pm: rounds run out on the last attempt -> PM decision queued, not needs-jk", async () => {
+  const root = tmpRoot();
+  stuckLedger(root);
+  const w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "pm-queued");
+  assert.equal(w.streams.length, 0);
+  assert.ok(!w.calls.some((c) => c.line.includes("--add-label needs-jk")));
+  const e = loadLedger(root).issues[1];
+  assert.equal(e.pm_pending.pr, 12);
+  assert.deepEqual(e.pm_pending.allowed, ["again", "merge", "owner"]);
+  assert.match(e.pm_pending.findings[0].body, /P1: nope/);
+});
+
+test("stuck pm: drafts, red checks and protected files take merge off the table", async () => {
+  const cases = [
+    [stuckPr({ isDraft: true }), ["again", "owner"]],
+    [stuckPr({ statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }, { name: "lint", status: "IN_PROGRESS", conclusion: null }] }), ["again", "owner"]],
+    [stuckPr({ statusCheckRollup: [] }), ["again", "owner"]],
+    [stuckPr({ files: [{ path: "lib/secret/key.mjs" }] }), ["again", "owner"]],
+    [stuckPr({ files: Array.from({ length: 100 }, (_, i) => ({ path: `lib/f${i}.mjs` })) }), ["again", "owner"]],
+  ];
+  for (const [p, allowed] of cases) {
+    const root = tmpRoot();
+    stuckLedger(root);
+    const w = world({ openPrs: [p], reviews: lastFinding });
+    assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "pm-queued");
+    assert.deepEqual(loadLedger(root).issues[1].pm_pending.allowed, allowed);
+  }
+});
+
+test("stuck pm: go-agains used up -> merge or owner only; nothing left -> needs-jk", async () => {
+  let root = tmpRoot();
+  stuckLedger(root, { pm_agains: 2 });
+  let w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "pm-queued");
+  assert.deepEqual(loadLedger(root).issues[1].pm_pending.allowed, ["merge", "owner"]);
+
+  root = tmpRoot();
+  stuckLedger(root, { pm_agains: 2 });
+  w = world({ openPrs: [stuckPr({ isDraft: true })], reviews: lastFinding });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "escalated");
+  assert.ok(w.calls.some((c) => c.line.startsWith("gh issue edit 1 --repo jk/proj --add-label needs-jk")));
+  assert.ok(!loadLedger(root).issues[1].pm_pending);
+});
+
+test("stuck pm: the $30 hard stop goes to the owner with no PM run", async () => {
+  const root = tmpRoot();
+  stuckLedger(root, { cost: 30, pm_agains: 1, fix_rounds: 3 });
+  const w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "escalated");
+  assert.equal(w.streams.length, 0);
+  const c = w.calls.find((x) => x.line.startsWith("gh issue comment 1"));
+  assert.match(c.input, /\$30/);
+});
+
+test("stuck owner: today's needs-jk path, no PM fields", async () => {
+  const root = tmpRoot();
+  stuckLedger(root);
+  const w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", test_cmd: "npm test", protected_paths: ["lib/secret/*"], stuck: "owner" });
+  const r = await runDispatch({ root, config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "escalated");
+  assert.ok(!("pm_pending" in loadLedger(root).issues[1]));
+});
+
+test("stuck pm: a queued decision runs as its own job; the owner's queue is left alone", async () => {
+  const pending = { pr: 12, findings: [{ id: "r80", author: "codex", body: "P1: nope" }], allowed: ["again", "merge", "owner"] };
+  let root = tmpRoot();
+  stuckLedger(root, { pm_pending: pending, review_keys: ["r80"] });
+  let w = world({ openPrs: [stuckPr()], reviews: [], stream: decisionStream({ decision: "owner", reason: "scope call", owner_question: "Ship without the cache?" }) });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(w.streams.filter(isDecide).length, 1);
+  assert.match(w.streams[0].o.input, /P1: nope/);
+
+  root = tmpRoot();
+  stuckLedger(root, { pm_pending: pending, review_keys: ["r80"] });
+  w = world({ openPrs: [stuckPr()], reviews: [], needsJk: [{ number: 1 }] });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(w.streams.length, 0);
+});
+
+test("after a PM go-again, the issue budget is the PM cap, not issue_budget_usd", async () => {
+  const root = tmpRoot();
+  stuckLedger(root, { pm_agains: 1, cost: 16, fix_rounds: 0 });
+  const w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "fixed");
+});
+
+// ---- acting on the PM's decision ----
+const PENDING = { pr: 12, findings: [{ id: "r80", author: "codex", body: "P1: nope" }], allowed: ["again", "merge", "owner"], merge_blocked: null };
+const liveView = (o = {}) => ({ state: "OPEN", isDraft: false, mergeable: "MERGEABLE", headRefOid: "sha12", statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], files: [{ path: "lib/a.mjs" }], ...o });
+async function decide(decision, { extra = {}, view = liveView(), mergeFail = null, stream = null, cfg = config, ...more } = {}) {
+  const root = tmpRoot();
+  stuckLedger(root, { pm_pending: PENDING, review_keys: ["r80"], ...extra });
+  const w = world({ openPrs: [stuckPr()], reviews: [], prView: view, mergeFail, issueLabels: ["in-review"], ...more, stream: stream ?? decisionStream(decision) });
+  const r = await runDispatch({ root, config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  return { root, w, r, e: loadLedger(root).issues[1], l: loadLedger(root) };
+}
+const prComment = (w) => w.calls.find((c) => c.line.startsWith("gh pr comment 12"));
+
+test("PM again: comment, direction kept, rounds reset, and the next dispatch runs that fix round", async () => {
+  const { root, w, r, e } = await decide({ decision: "again", reason: "Close; only the null check is real.", direction: "Fix the null check. Ignore the naming nit." });
+  assert.equal(r.action, "pm-again");
+  assert.match(prComment(w).input, /^PM: going again\./);
+  assert.equal(e.pm_agains, 1);
+  assert.equal(e.fix_rounds, 0);
+  assert.equal(e.pm_direction, "Fix the null check. Ignore the naming nit.");
+  assert.deepEqual(e.pm_fix.map((f) => f.id), ["r80"]);
+  assert.equal(e.pm_pending, null);
+  assert.equal(e.cost, 5.4);
+
+  const w2 = world({ openPrs: [stuckPr()], reviews: [] });
+  const r2 = await runDispatch({ root, config, run: w2.run, runStream: w2.runStream, now: NOW });
+  assert.equal(r2.action, "fixed");
+  assert.match(w2.streams[0].o.input, /<pm-direction>[\s\S]*Fix the null check[\s\S]*<\/pm-direction>/);
+  assert.match(w2.streams[0].o.input, /PM's direction wins/);
+  assert.match(w2.streams[0].o.input, /P1: nope/);
+  assert.equal(loadLedger(root).issues[1].pm_fix, null);
+});
+
+test("PM merge: re-checks the live PR, comments, merges bound to the head it read", async () => {
+  const { w, r, e } = await decide({ decision: "merge", reason: "Does what the issue asked; the finding is a false alarm." });
+  assert.equal(r.action, "pm-merged");
+  assert.match(prComment(w).input, /^PM: merging over 1 open finding\(s\)\./);
+  assert.ok(w.calls.some((c) => c.line === "gh pr merge 12 --repo jk/proj --merge --delete-branch --match-head-commit sha12"));
+  assert.ok(!w.calls.some((c) => c.line.includes("--add-label needs-jk")));
+  assert.equal(e.pm_pending, null);
+});
+
+test("PM merge refused by crew: head moved, PR turned draft, or GitHub says no -> needs-jk", async () => {
+  for (const [opts, why] of [
+    [{ view: liveView({ headRefOid: "sha99" }) }, /changed/],
+    [{ view: liveView({ isDraft: true }) }, /draft/],
+    [{ view: liveView({ statusCheckRollup: [{ name: "test", conclusion: "FAILURE" }] }) }, /checks/],
+    [{ mergeFail: "GraphQL: Required status check \"build\" is expected." }, /Required status check/],
+  ]) {
+    const { w, r } = await decide({ decision: "merge", reason: "ok" }, opts);
+    assert.equal(r.action, "pm-owner", JSON.stringify(opts));
+    assert.ok(w.calls.some((c) => c.line.startsWith("gh issue edit 1 --repo jk/proj --add-label needs-jk")));
+    assert.match(w.calls.find((c) => c.line.startsWith("gh issue comment 1")).input, why);
+    if (!opts.mergeFail) assert.ok(!w.calls.some((c) => c.line.startsWith("gh pr merge")));
+  }
+});
+
+test("PM owner: needs-jk with the PM's question", async () => {
+  const { w, r } = await decide({ decision: "owner", reason: "Scope call.", owner_question: "Ship without the cache?" });
+  assert.equal(r.action, "pm-owner");
+  assert.match(w.calls.find((c) => c.line.startsWith("gh issue comment 1")).input, /Ship without the cache\?/);
+});
+
+test("PM run fails twice: needs-jk with the error, pending cleared, cost charged", async () => {
+  const bad = () => ({ code: 0, signal: null, timedOut: null, stderr: "", stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "no idea", total_cost_usd: 0.25 }) });
+  const { w, r, e, l } = await decide(null, { stream: bad });
+  assert.equal(r.action, "pm-owner");
+  assert.match(w.calls.find((c) => c.line.startsWith("gh issue comment 1")).input, /PM could not decide/);
+  assert.equal(e.pm_pending, null);
+  assert.equal(e.cost, 5.5);
+  assert.equal(l.days["2026-11-08"], 0.501);
+});
+
+test("PM decision is pinned to its own PR: another PR for the issue, or a fork, is never merged", async () => {
+  // A second open PR maps to the same issue: no decide job runs on it.
+  let root = tmpRoot();
+  stuckLedger(root, { pm_pending: PENDING, review_keys: ["r80"] });
+  let w = world({ openPrs: [stuckPr({ number: 13, headRefName: "agent/1-evil", headRefOid: "sha13" })], reviews: [], prView: liveView({ headRefOid: "sha13" }), stream: decisionStream({ decision: "merge", reason: "ok" }) });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(w.streams.filter(isDecide).length, 0);
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh pr merge")));
+
+  // The PR comes from a fork: no merge, the owner decides.
+  const { w: w2, r } = await decide({ decision: "merge", reason: "ok" }, { view: liveView({ isCrossRepository: true }) });
+  assert.equal(r.action, "pm-owner");
+  assert.ok(!w2.calls.some((c) => c.line.startsWith("gh pr merge")));
+});
+
+// ---- final review fixes: stale decisions, owner takeover, gate, crew-side errors ----
+test("a stale PM decision is dropped: another PR for the issue, or the issue on the owner's queue", async () => {
+  let root = tmpRoot();
+  stuckLedger(root, { pm_pending: PENDING, pm_fix: PENDING.findings, review_keys: ["r80"], fix_rounds: 0 });
+  let w = world({ openPrs: [stuckPr({ number: 20, headRefName: "agent/1-x-r2", headRefOid: "sha20" })], reviews: [] });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(w.streams.filter(isDecide).length, 0);
+  let e = loadLedger(root).issues[1];
+  assert.equal(e.pm_pending, null);
+  assert.equal(e.pm_fix, null);
+
+  root = tmpRoot();
+  stuckLedger(root, { pm_pending: PENDING, review_keys: ["r80"] });
+  w = world({ openPrs: [stuckPr()], reviews: [], needsJk: [{ number: 1 }] });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(loadLedger(root).issues[1].pm_pending, null);
+});
+
+test("crew queue retry clears every PM field", () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 20, attempts: 2, fix_rounds: 3, pr: null, review_keys: [], pm_pending: PENDING, pm_fix: [], pm_agains: 2, pm_direction: "old" } } });
+  const run = (cmd, args) => (args[0] === "issue" && args[1] === "view" ? { ok: true, stdout: JSON.stringify({ labels: [] }) } : { ok: true, stdout: "" });
+  retryIssues({ root, config, numbers: [1], run });
+  const e = loadLedger(root).issues[1];
+  assert.deepEqual([e.pm_pending, e.pm_fix, e.pm_agains, e.pm_direction], [null, null, 0, null]);
+});
+
+test("the owner took the issue while the PM was thinking: crew does nothing", async () => {
+  const { w, r, e } = await decide({ decision: "merge", reason: "ok" }, { issueLabels: ["needs-jk"] });
+  assert.equal(r.action, "pm-skipped");
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh pr merge") || c.line.startsWith("gh pr comment")));
+  assert.equal(e.pm_pending, null);
+});
+
+test("a never-auto-merge from the PR gate posted during the PM run stops the merge", async () => {
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", test_cmd: "npm test", protected_paths: ["lib/secret/*"], gate_comment_prefix: "pr-gate" });
+  const gate = [{ id: 9, user: { login: "jk" }, created_at: "2026-11-08T09:55:00Z", body: "pr-gate: owner merge required: `lib/a.mjs` is in the never-auto-merge set" }];
+  let posted = false; // the gate posts while the PM is thinking, after crew planned the decision
+  const think = decisionStream({ decision: "merge", reason: "ok" });
+  const { w, r } = await decide(null, { cfg, issueComments: () => (posted ? gate : []), stream: (o) => { posted = true; return think(o); } });
+  assert.equal(r.action, "pm-owner");
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh pr merge")));
+  assert.match(w.calls.find((c) => c.line.startsWith("gh issue comment 1")).input, /never-auto-merge/);
+});
+
+test("a gh error while acting goes to the owner and does not break the run", async () => {
+  const { r, w } = await decide({ decision: "again", reason: "r", direction: "d" }, { commentFail: "HTTP 502" });
+  assert.equal(r.action, "pm-owner");
+  assert.match(w.calls.find((c) => c.line.startsWith("gh issue comment 1")).input, /HTTP 502/);
+});
+
+test("a failing protected_paths_cmd at escalation blocks merge instead of losing the escalation", async () => {
+  const root = tmpRoot();
+  stuckLedger(root);
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", test_cmd: "npm test", protected_paths_cmd: "check-protected" });
+  const w = world({ openPrs: [stuckPr()], reviews: lastFinding });
+  const r = await runDispatch({ root, config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "pm-queued");
+  const e = loadLedger(root).issues[1];
+  assert.deepEqual(e.pm_pending.allowed, ["again", "owner"]);
+  assert.match(e.pm_pending.merge_blocked, /could not check protected paths/);
 });
 
 test("cleanup: a tick removes a dead run's worktree; a dry run removes nothing", async () => {
