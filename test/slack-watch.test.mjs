@@ -476,3 +476,32 @@ test("dispatchNews: the PM's decisions on stuck PRs", () => {
   assert.match(dispatchNews({ action: "pm-merged", issue: 4, pr: 12, why: "false alarm" }, config), /PM merged .*false alarm/);
   assert.match(dispatchNews({ action: "pm-owner", issue: 4, why: "scope call" }, config), /needs-jk.*scope call/);
 });
+
+test("board: sessions section after workers", () => {
+  const cols = collectBoard(config, ghRun(issues));
+  const sessions = [{ id: "s1", host: "Mac", machine: "mac", cwd: "/x/proj", worktree: null, started: "2026-11-08T11:18:00Z", updated: "2026-11-08T11:57:00Z", files: ["a", "b"] }];
+  const now = new Date("2026-11-08T12:00:00Z");
+  const text = renderBoard(config, cols, now, [], sessions);
+  assert.match(text, /🧑‍💻 \*Sessions\* \(1\) · open on this machine\n• mac · proj · open 42m · active 3m ago · 2 files/);
+  assert.ok(text.indexOf("*Sessions*") > text.indexOf("*Workers*"));
+  assert.ok(text.indexOf("*Sessions*") < text.indexOf("*Ready*"));
+  const md = renderBoardMarkdown(config, cols, now, [], [{ ...sessions[0], machine: null, worktree: "/x/proj/.claude/worktrees/fix-it" }]);
+  assert.match(md, /## 🧑‍💻 Sessions \(1\) · open on this machine\n- Mac · fix-it · open 42m · active 3m ago · 2 files/);
+});
+
+test("board: no sessions shows none", () => {
+  const text = renderBoard(config, collectBoard(config, ghRun(issues)), new Date("2026-11-08T12:00:00Z"));
+  assert.match(text, /\*Sessions\* \(0\) · open on this machine\n• none/);
+});
+
+test("board: a session opening changes the hash", async () => {
+  const root = tmpRoot();
+  const env = tmpEnv();
+  const s = fakeSlack();
+  const t = new Date();
+  assert.equal((await syncBoard({ root, config: cfgC, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: t })).action, "posted");
+  assert.equal((await syncBoard({ root, config: cfgC, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: t })).action, "skipped");
+  fs.mkdirSync(path.join(root, ".crew", "sessions"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".crew", "sessions", "s1.json"), JSON.stringify({ id: "s1", host: os.hostname(), started: t.toISOString(), updated: t.toISOString(), files: [] }));
+  assert.equal((await syncBoard({ root, config: cfgC, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: t })).action, "updated");
+});

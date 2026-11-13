@@ -48,8 +48,10 @@ function world(opts = {}) {
     if (line.startsWith("gh pr comment") && opts.commentFail) return { ok: false, code: 1, stdout: "", stderr: opts.commentFail };
     if (line.startsWith("gh pr merge") && opts.mergeFail) return { ok: false, code: 1, stdout: "", stderr: opts.mergeFail };
     if (cmd === "gh") return ok("");
+    if (line.startsWith("git worktree list")) { if (opts.worktreeListThrows) throw new Error("EPERM"); return ok(opts.worktrees ?? ""); }
     if (line.startsWith("git worktree add")) {
       const wt = args[args.indexOf("-b") + 2];
+      opts.onWorktreeAdd?.(wt);
       fs.mkdirSync(wt, { recursive: true });
       return ok("");
     }
@@ -1313,4 +1315,69 @@ test("a failing protected_paths_cmd at escalation blocks merge instead of losing
   const e = loadLedger(root).issues[1];
   assert.deepEqual(e.pm_pending.allowed, ["again", "owner"]);
   assert.match(e.pm_pending.merge_blocked, /could not check protected paths/);
+});
+
+test("cleanup: a tick removes a dead run's worktree; a dry run removes nothing", async () => {
+  const dead = "worktree /r\nHEAD a\n\nworktree /tmp/crew-dev-dead1/wt\nHEAD b\nbranch refs/heads/crew-work/4-1\n";
+  const dry = world({ worktrees: dead });
+  await runDispatch({ root: tmpRoot(), config, run: dry.run, runStream: dry.runStream, now: NOW, dryRun: true });
+  assert.ok(!dry.calls.some((c) => c.line === "git worktree remove --force /tmp/crew-dev-dead1/wt"));
+  const root = tmpRoot();
+  const w = world({ worktrees: dead });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.ok(w.calls.some((c) => c.line === "git worktree remove --force /tmp/crew-dev-dead1/wt"));
+  assert.match(fs.readFileSync(path.join(root, ".crew", "dispatch.log"), "utf8"), /"action":"cleanup"/);
+});
+
+test("cleanup: a worker records its worktree before creating it", async () => {
+  const root = tmpRoot();
+  let seen = null;
+  const w = world({ onWorktreeAdd: (wt) => { seen = [wt, JSON.parse(fs.readFileSync(path.join(root, ".crew", "workers", "1.json"), "utf8")).wt]; } });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.ok(seen && seen[0] === seen[1], `worker file wt ${seen?.[1]} != ${seen?.[0]}`);
+});
+
+test("cleanup: an error while cleaning never stops the tick", async () => {
+  const root = tmpRoot();
+  const w = world({ worktreeListThrows: true });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "built");
+  assert.match(fs.readFileSync(path.join(root, ".crew", "dispatch.log"), "utf8"), /"action":"cleanup","outcome":"error"/);
+});
+
+function putSession(root, { id = "s1", files, minsAgo = 5, worktree = null } = {}) {
+  const dir = path.join(root, ".crew", "sessions");
+  fs.mkdirSync(dir, { recursive: true });
+  const at = new Date(NOW.getTime() - minsAgo * 60_000).toISOString();
+  fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ id, host: os.hostname(), machine: "mac", cwd: root, worktree, started: at, updated: at, files }));
+}
+
+test("overlap: a live session's edit holds an overlapping build", async () => {
+  const root = tmpRoot();
+  putSession(root, { files: ["lib/a.mjs"], worktree: "/x/.claude/worktrees/fix-it" });
+  const w = world({ issues: [ready(1, "Writes: lib/a.mjs")] });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "idle");
+  assert.match(r.skipped.find((x) => x.number === 1).reason, /waits for a session on mac \(fix-it\) \(both change lib\/a\.mjs\)/);
+});
+
+test("overlap: a session on other files does not hold", async () => {
+  const root = tmpRoot();
+  putSession(root, { files: ["lib/b.mjs"] });
+  const w = world({ issues: [ready(1, "Writes: lib/a.mjs")] });
+  assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "built");
+});
+
+test("overlap: exempt files never hold", async () => {
+  const root = tmpRoot();
+  putSession(root, { files: ["PROGRESS.md"] });
+  const w = world({ issues: [ready(1, "Writes: PROGRESS.md, lib/a.mjs")] });
+  assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "built");
+});
+
+test("overlap: a quiet session no longer holds", async () => {
+  const root = tmpRoot();
+  putSession(root, { files: ["lib/a.mjs"], minsAgo: 180 });
+  const w = world({ issues: [ready(1, "Writes: lib/a.mjs")] });
+  assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "built");
 });

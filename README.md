@@ -66,6 +66,14 @@ price; with this token they count against your plan's usage limits and nothing i
 | Keep dev away while you work | `crew lease on` … `crew lease off` |
 | Close a session cleanly | `/crew:handoff` |
 | Import an existing checklist | `crew queue import backlog.md --section "Queue" --dry-run` |
+| See the Claude sessions open on this machine | `crew sessions` (or `crew workers` for both) |
+
+**Sessions.** The plugin's hooks record every interactive Claude Code session opened in a crew repo
+(crew's own headless runs are left out). Each one appears in `crew sessions` and on the Slack board
+under **🧑‍💻 Sessions**, showing the machine, the folder, how long it has been open, when it was
+last active, and how many files it has edited. A session drops off when it closes, or after
+`session_quiet_min` (default 120) quiet minutes if it crashed. `crew sessions clear <id>|--all`
+forgets one. Each machine sees only its own sessions.
 
 ## Schedule it
 
@@ -84,7 +92,9 @@ shared out between them.
 
 **Overlap guard:** a new build waits while another open agent PR, or a running build, changes a
 file it will change. An open PR holds its files until it merges or closes, so the waiting build
-starts later from the merged branch, with no conflict round. The files an issue will change come
+starts later from the merged branch, with no conflict round. A live interactive session also holds
+the files it has edited (see `crew sessions`) until it closes, goes quiet for `session_quiet_min`
+(default 120 minutes) or runs `crew sessions clear`. The files an issue will change come
 from a `Writes: path/a.py, path/b.py` line in its body, or else from every path the body cites. An
 issue that cites no path runs unguarded; a path cited only for reference also counts, so use `Writes:` to narrow it. `Depends on #12` (or `blocked by #12`) makes a build wait
 until #12 is closed. Shared logs (`PROGRESS.md`, `LEARNINGS.md`, `crew-log/`, `wiki/log.md`) never
@@ -252,7 +262,8 @@ runs under its own worker file, `.crew/workers/<issue>.json`, which records the 
 start time and cost so far. Every `watch` tick tops up whatever slots are free (`parallel` minus running
 workers), so a slow build never holds up the rest. See them with `crew workers`, or in the
 **⚙️ Workers** section at the top of the Slack board. `crew stop` ends them all. A file left by a dead
-process is cleaned up on the next tick. Ledger writes from parallel workers merge, so they never
+process is cleaned up on the next tick, and so are the worktrees, temp folders and branches of runs
+that died (a reboot, a crash), which can hold gigabytes of build output. Ledger writes from parallel workers merge, so they never
 overwrite each other.
 
 1. **Plain checks, with no model call:** the lock, your lease, the daily budget, and the queue.

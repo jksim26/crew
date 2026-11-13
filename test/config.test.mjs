@@ -161,3 +161,8 @@ test("stuck and PM caps: defaults, validation", () => {
   assert.ok(validate({ ...base, caps: { pm_agains: 1.5 } }).some((s) => s.includes("caps.pm_agains") && s.includes("whole number")));
   assert.ok(validate({ ...base, caps: { issue_budget_usd: 20, pm_issue_budget_usd: 10 } }).some((s) => s.includes("pm_issue_budget_usd")));
 });
+
+test("session_quiet_min is a whole number of minutes from 10 to 1440", () => {
+  for (const bad of [9, 1441, 30.5, "120"]) assert.ok(validate({ ...base, session_quiet_min: bad }).some((s) => s.includes('"session_quiet_min" must be an integer from 10 to 1440')), String(bad));
+  assert.deepEqual(validate({ ...base, session_quiet_min: 120 }), []);
+});
