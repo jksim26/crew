@@ -505,3 +505,19 @@ test("board: a session opening changes the hash", async () => {
   fs.writeFileSync(path.join(root, ".crew", "sessions", "s1.json"), JSON.stringify({ id: "s1", host: os.hostname(), started: t.toISOString(), updated: t.toISOString(), files: [] }));
   assert.equal((await syncBoard({ root, config: cfgC, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: t })).action, "updated");
 });
+
+test("watch: skips the tick while crew is updating", async () => {
+  const { markUpdating } = await import("../lib/update.mjs");
+  const env = { ...tmpEnv(), XDG_DATA_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "crew-upd-")) };
+  env.LOCALAPPDATA = env.XDG_DATA_HOME;
+  markUpdating(env);
+  const called = [];
+  const r = await runWatch({
+    root: tmpRoot(), config: cfgC, env, now: new Date(),
+    dispatch: async () => (called.push("dispatch"), { action: "idle" }),
+    board: async () => (called.push("board"), { action: "skipped" }),
+    news: async () => ({ ok: true }),
+  });
+  assert.deepEqual(r, { skipped: "crew is updating" });
+  assert.deepEqual(called, []);
+});

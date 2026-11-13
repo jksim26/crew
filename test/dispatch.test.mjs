@@ -1381,3 +1381,14 @@ test("overlap: a quiet session no longer holds", async () => {
   const w = world({ issues: [ready(1, "Writes: lib/a.mjs")] });
   assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "built");
 });
+
+test("dispatch: skips while crew is updating", async () => {
+  const { markUpdating } = await import("../lib/update.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-upd-"));
+  const env = { XDG_DATA_HOME: dir, LOCALAPPDATA: dir };
+  markUpdating(env);
+  const w = world();
+  const r = await runDispatch({ root: tmpRoot(), config, run: w.run, runStream: w.runStream, now: NOW, env });
+  assert.equal(r.action, "updating");
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh ")));
+});

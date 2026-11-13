@@ -120,6 +120,25 @@ To keep the dev worker off the subscription while other jobs need it, set local-
 - **Logs:** `.crew/logs/<job>.log`.
 - **Preview first:** `--print` shows the file without installing it.
 
+## Updates
+
+Run `crew update setup` once on each machine. It makes a runner-only clone of crew
+(`~/.local/share/crew/runtime`, Windows `%LOCALAPPDATA%\crew\runtime`) that nobody works in. It also
+installs the Claude plugin from that clone, points every crew job at it, and adds an hourly `update`
+job. From then on crew keeps itself current:
+
+- **When:** only when no dev worker or dispatch is running on the machine.
+- **Tested first:** the new `main` runs its own tests in a scratch copy before anything switches. A
+  version that fails is skipped, with one Slack line; `crew update retry` tries it again.
+- **Switch:** watch and dispatch pause for the few seconds it takes. If the switched copy doesn't
+  start, crew rolls back on its own (`crew update rollback` does it by hand). The plugin follows.
+- **Reporting:** one Slack line per change, for example `crew 0.8.21 → 0.8.22 on mac`.
+- **Commands:** `crew update status` shows where things stand. `crew update off` / `on` sets the
+  switch per machine. `crew doctor` warns when jobs or the plugin run from anywhere else.
+
+Your working folder (for example `~/code/crew`) is never touched, so its branch never reaches the
+runner.
+
 ## Self-review (optional)
 
 `crew review` runs the project's own review routine, on the machine that holds the live files. Point

@@ -143,3 +143,99 @@ test("windows: the watch task runs ticks in parallel (dispatch has its own lock)
   assert.match(windowsScript(args), /-MultipleInstances IgnoreNew/);
   assert.match(windowsScript({ ...args, instances: "Parallel" }), /-MultipleInstances Parallel/);
 });
+
+// ---- auto-update: finding, re-pointing and planning crew jobs ---------------------------------
+import { crewJobs, repointJob, planUpdateJob, effectiveBin, CREW_BIN } from "../lib/schedule.mjs";
+const okRun = (calls = []) => (cmd, args) => (calls.push(`${cmd} ${args.join(" ")}`), { ok: true, stdout: cmd === "id" ? "501\n" : "", stderr: "" });
+const plistFor = (label, root, bin = "/old/crew/bin/crew") => launchdPlist({ label, root, args: ["watch"], when: { every: 10 }, envPath: "/bin", logFile: "/l", node: "/n/node", bin });
+
+test("crewJobs: finds launchd jobs and their folders", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "crew-home-"));
+  const dir = path.join(home, "Library", "LaunchAgents");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "dev.crew.proj-watch.plist"), plistFor("dev.crew.proj-watch", "/r/proj"));
+  fs.writeFileSync(path.join(dir, "dev.crew.update.plist"), plistFor("dev.crew.update", "/u"));
+  fs.writeFileSync(path.join(dir, "com.other.plist"), plistFor("com.other", "/x"));
+  assert.deepEqual(crewJobs({ platform: "darwin", run: okRun(), home }), [{ name: "dev.crew.proj-watch", root: "/r/proj", file: path.join(dir, "dev.crew.proj-watch.plist") }]);
+});
+
+test("crewJobs: finds Windows tasks from schtasks CSV", () => {
+  const head = '"HostName","TaskName","Next Run Time","Status","Task To Run","Start In"';
+  const csv = [head, '"PC","\\crew\\proj-watch","N/A","Ready","cmd.exe","C:\\r\\proj"', head, '"PC","\\Microsoft\\other","N/A","Ready","x","C:\\x"', '"PC","\\crew\\update","N/A","Ready","cmd.exe","C:\\u"'].join("\r\n");
+  const run = (cmd) => (cmd === "schtasks" ? { ok: true, stdout: csv } : { ok: false, stdout: "" });
+  assert.deepEqual(crewJobs({ platform: "win32", run }), [{ name: "proj-watch", root: "C:\\r\\proj", file: path.join("C:\\r\\proj", ".crew", "schedule", "proj-watch.ps1") }]);
+});
+
+test("repointJob: macOS swaps only the crew path and reloads", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-la-"));
+  const file = path.join(dir, "dev.crew.proj-watch.plist");
+  const before = plistFor("dev.crew.proj-watch", "/r/proj");
+  fs.writeFileSync(file, before);
+  const calls = [];
+  const job = { name: "dev.crew.proj-watch", root: "/r/proj", file };
+  assert.deepEqual(repointJob(job, "/rt/bin/crew", { platform: "darwin", run: okRun(calls) }), { changed: true });
+  const after = fs.readFileSync(file, "utf8");
+  assert.equal(after, before.replace("<string>/old/crew/bin/crew</string>", "<string>/rt/bin/crew</string>"));
+  assert.ok(calls.some((c) => c.startsWith("launchctl bootstrap")));
+  assert.deepEqual(repointJob(job, "/rt/bin/crew", { platform: "darwin", run: okRun() }), { changed: false });
+});
+
+test("repointJob: Windows keeps quoting with spaces", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-ps-"));
+  const file = path.join(dir, "proj-watch.ps1");
+  fs.writeFileSync(file, windowsScript({ taskName: "proj-watch", root: "C:\\r\\proj", args: ["watch"], when: { every: 10 }, logFile: "C:\\r\\proj\\.crew\\logs\\watch.log", limitMin: 70, node: "C:\\node\\node.exe", bin: "C:\\old\\bin\\crew" }));
+  const calls = [];
+  const bin = "C:\\Users\\J K\\AppData\\Local\\crew\\runtime\\bin\\crew";
+  assert.deepEqual(repointJob({ name: "proj-watch", root: "C:\\r\\proj", file }, bin, { platform: "win32", run: okRun(calls) }), { changed: true });
+  const s = fs.readFileSync(file, "utf8");
+  assert.ok(s.includes(`"C:\\node\\node.exe" "${bin}" watch --log-file`), s);
+  assert.ok(!s.includes("C:\\old\\bin\\crew"));
+  assert.ok(calls.includes(`powershell -NoProfile -ExecutionPolicy Bypass -File ${file}`));
+});
+
+test("planUpdateJob: hourly, machine-level", () => {
+  const env = { XDG_DATA_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "crew-upd-")) };
+  const p = planUpdateJob({ env, platform: "darwin", run: okRun() });
+  assert.equal(p.name, "dev.crew.update");
+  assert.ok(p.text.includes("<integer>3600</integer>") && p.text.includes("<string>update</string>"), p.text);
+  assert.ok(p.logFile.endsWith(path.join("logs", "update.log")));
+  assert.ok(p.text.includes(`<string>${path.join(env.XDG_DATA_HOME, "crew")}</string>`));
+});
+
+test("effectiveBin: prefers the runner clone", () => {
+  const env = { XDG_DATA_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "crew-upd-")) };
+  assert.equal(effectiveBin(env, "darwin"), CREW_BIN);
+  const bin = path.join(env.XDG_DATA_HOME, "crew", "runtime", "bin", "crew");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.writeFileSync(bin, "");
+  assert.equal(effectiveBin(env, "darwin"), bin);
+  assert.ok(planJob({ root: "/r", config, job: "watch", when: { every: 10 }, platform: "darwin", run: okRun(), env }).text.includes(`<string>${bin}</string>`));
+});
+
+test("repointJob: a failed reload restores the old job (macOS)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-la-"));
+  const file = path.join(dir, "dev.crew.proj-watch.plist");
+  const before = plistFor("dev.crew.proj-watch", "/r/proj");
+  fs.writeFileSync(file, before);
+  const calls = [];
+  let boots = 0;
+  const run = (cmd, args) => {
+    calls.push(`${cmd} ${args.join(" ")}`);
+    if (cmd === "id") return { ok: true, stdout: "501\n" };
+    if (cmd === "launchctl" && args[0] === "bootstrap") return ++boots === 1 ? { ok: false, stdout: "", stderr: "Bootstrap failed: 5: Input/output error" } : { ok: true, stdout: "" };
+    return { ok: true, stdout: "" };
+  };
+  assert.throws(() => repointJob({ name: "dev.crew.proj-watch", root: "/r/proj", file }, "/rt/bin/crew", { platform: "darwin", run }), /reloading dev\.crew\.proj-watch failed/);
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+  assert.equal(boots, 2, "the old job is loaded again");
+});
+
+test("repointJob: a failed re-register restores the old script (Windows)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-ps-"));
+  const file = path.join(dir, "proj-watch.ps1");
+  const before = windowsScript({ taskName: "proj-watch", root: "C:\\r", args: ["watch"], when: { every: 10 }, logFile: "l", limitMin: 70, node: "C:\\n.exe", bin: "C:\\old\\crew" });
+  fs.writeFileSync(file, before);
+  const run = () => ({ ok: false, stdout: "", stderr: "Access is denied." });
+  assert.throws(() => repointJob({ name: "proj-watch", root: "C:\\r", file }, "C:\\rt\\bin\\crew", { platform: "win32", run }), /Access is denied/);
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+});
