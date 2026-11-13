@@ -66,6 +66,14 @@ price; with this token they count against your plan's usage limits and nothing i
 | Keep dev away while you work | `crew lease on` … `crew lease off` |
 | Close a session cleanly | `/crew:handoff` |
 | Import an existing checklist | `crew queue import backlog.md --section "Queue" --dry-run` |
+| See the Claude sessions open on this machine | `crew sessions` (or `crew workers` for both) |
+
+**Sessions.** The plugin's hooks record every interactive Claude Code session opened in a crew repo
+(crew's own headless runs are left out). Each one appears in `crew sessions` and on the Slack board
+under **🧑‍💻 Sessions**, showing the machine, the folder, how long it has been open, when it was
+last active, and how many files it has edited. A session drops off when it closes, or after
+`session_quiet_min` (default 120) quiet minutes if it crashed. `crew sessions clear <id>|--all`
+forgets one. Each machine sees only its own sessions.
 
 ## Schedule it
 
