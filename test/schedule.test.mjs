@@ -211,3 +211,31 @@ test("effectiveBin: prefers the runner clone", () => {
   assert.equal(effectiveBin(env, "darwin"), bin);
   assert.ok(planJob({ root: "/r", config, job: "watch", when: { every: 10 }, platform: "darwin", run: okRun(), env }).text.includes(`<string>${bin}</string>`));
 });
+
+test("repointJob: a failed reload restores the old job (macOS)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-la-"));
+  const file = path.join(dir, "dev.crew.proj-watch.plist");
+  const before = plistFor("dev.crew.proj-watch", "/r/proj");
+  fs.writeFileSync(file, before);
+  const calls = [];
+  let boots = 0;
+  const run = (cmd, args) => {
+    calls.push(`${cmd} ${args.join(" ")}`);
+    if (cmd === "id") return { ok: true, stdout: "501\n" };
+    if (cmd === "launchctl" && args[0] === "bootstrap") return ++boots === 1 ? { ok: false, stdout: "", stderr: "Bootstrap failed: 5: Input/output error" } : { ok: true, stdout: "" };
+    return { ok: true, stdout: "" };
+  };
+  assert.throws(() => repointJob({ name: "dev.crew.proj-watch", root: "/r/proj", file }, "/rt/bin/crew", { platform: "darwin", run }), /reloading dev\.crew\.proj-watch failed/);
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+  assert.equal(boots, 2, "the old job is loaded again");
+});
+
+test("repointJob: a failed re-register restores the old script (Windows)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "crew-ps-"));
+  const file = path.join(dir, "proj-watch.ps1");
+  const before = windowsScript({ taskName: "proj-watch", root: "C:\\r", args: ["watch"], when: { every: 10 }, logFile: "l", limitMin: 70, node: "C:\\n.exe", bin: "C:\\old\\crew" });
+  fs.writeFileSync(file, before);
+  const run = () => ({ ok: false, stdout: "", stderr: "Access is denied." });
+  assert.throws(() => repointJob({ name: "proj-watch", root: "C:\\r", file }, "C:\\rt\\bin\\crew", { platform: "win32", run }), /Access is denied/);
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+});

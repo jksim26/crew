@@ -327,3 +327,71 @@ test("updateChecks: warns when jobs run outside the runner", () => {
   assert.equal(after.find((c) => c.name === "runner").status, "ok");
   assert.equal(after.find((c) => c.name === "plugin source").status, "ok");
 });
+
+// ---- final-review fixes -------------------------------------------------------------------------
+test("fix: a worker that starts during the test run stops the switch", async () => {
+  const m = machine();
+  const orig = m.run;
+  const run = (cmd, args, opt) => {
+    if (cmd === NODE && args[0] === "--test") {
+      fs.mkdirSync(path.join(m.project, ".crew", "workers"), { recursive: true });
+      fs.writeFileSync(path.join(m.project, ".crew", "workers", "9.json"), JSON.stringify({ issue: 9, pid: process.pid, host: os.hostname(), started: new Date().toISOString() }));
+    }
+    return orig(cmd, args, opt);
+  };
+  const r = await runUpdate({ env: m.env, platform: "darwin", run, post: async () => ({ ok: true }), jobs: () => [{ name: "w", root: m.project, file: "x" }], machine: "mac", node: NODE });
+  assert.equal(r.outcome, "waiting");
+  assert.ok(!m.calls.some((c) => c.startsWith("git merge")));
+  assert.equal(updatingNow(m.env, "darwin"), false);
+});
+
+test("fix: plugin_pending is saved before the plugin sync starts", async () => {
+  const m = machine();
+  const orig = m.run;
+  const run = (cmd, args, opt) => {
+    if (cmd === "claude" && args[1] === "marketplace") throw new Error("killed mid-sync");
+    return orig(cmd, args, opt);
+  };
+  await assert.rejects(runUpdate({ env: m.env, platform: "darwin", run, post: async () => ({ ok: true }), jobs: () => [], machine: "mac", node: NODE }), /killed mid-sync/);
+  assert.equal(readUpdateState(m.env, "darwin").plugin_pending, true);
+});
+
+test("fix: no runner yet is not reported as local changes", async () => {
+  const dir = tmp();
+  const env = envFor(dir);
+  const posts = [];
+  const r = await runUpdate({ env, platform: "darwin", run: () => ({ ok: false, stdout: "", stderr: "not a git repository" }), post: async ({ text }) => (posts.push(text), { ok: true }), jobs: () => [], machine: "mac", node: NODE });
+  assert.equal(r.outcome, "not-set-up");
+  assert.deepEqual(posts, []);
+});
+
+test("fix: rollback by hand refuses a dirty runner and never goes back to a bad commit", () => {
+  const m = machine();
+  writeUpdateState({ current: NEW, previous: OLD }, m.env, "darwin");
+  assert.deepEqual(rollbackUpdate({ env: m.env, platform: "darwin", run: m.run, reason: "by hand" }), { ok: true, to: OLD });
+  const again = rollbackUpdate({ env: m.env, platform: "darwin", run: m.run, reason: "by hand" });
+  assert.equal(again.ok, false);
+  assert.match(again.why, /bad/);
+  assert.equal(m.calls.filter((c) => c.startsWith("git reset")).length, 1);
+  const d = machine({ dirty: true });
+  writeUpdateState({ current: NEW, previous: OLD }, d.env, "darwin");
+  const r = rollbackUpdate({ env: d.env, platform: "darwin", run: d.run, reason: "by hand" });
+  assert.equal(r.ok, false);
+  assert.ok(!d.calls.some((c) => c.startsWith("git reset")));
+});
+
+test("fix: setup waits while work is running", () => {
+  const w = setupWorld();
+  const proj = path.join(w.dir, "proj");
+  fs.mkdirSync(path.join(proj, ".crew", "workers"), { recursive: true });
+  fs.writeFileSync(path.join(proj, ".crew", "workers", "4.json"), JSON.stringify({ issue: 4, pid: process.pid, host: os.hostname(), started: new Date().toISOString() }));
+  assert.throws(() => w.go(), /running .*proj #4/);
+  assert.ok(!w.calls.some((c) => c.startsWith("launchctl bootout")));
+});
+
+test("fix: setup skips a job whose project folder is gone", () => {
+  const w = setupWorld();
+  const gone = path.join(w.dir, "gone", ".crew", "schedule", "gone-watch.ps1");
+  const r = setupUpdate({ env: w.env, platform: "darwin", run: w.run, origin: "o", home: w.home, jobs: () => [{ name: "dev.crew.gone-watch", root: path.join(w.dir, "gone"), file: gone }] });
+  assert.equal(r.steps.find((s) => s.step === "jobs use the runner").done, "already");
+});
