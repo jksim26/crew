@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+// Claude Code hook entry (hooks/hooks.json). It must never exit non-zero: exit 2 makes Claude Code
+// block the prompt or the tool result, in every repo the user opens. So even a crew that fails to
+// load (a broken release, a half-replaced plugin folder) ends here with exit 0 and no output.
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+import(pathToFileURL(path.join(__dirname, "..", "lib", "cli.mjs")).href)
+  .then((m) => m.main(["session-hook", ...process.argv.slice(2)]))
+  .catch(() => {})
+  .finally(() => { process.exitCode = 0; });

@@ -1,6 +1,6 @@
 {
   "name": "crew",
-  "version": "0.8.19",
+  "version": "0.8.20",
   "description": "An AI team for a repo: a read-only PM that briefs you, a capped headless dev worker fed by GitHub issues, Codex as reviewer. Sessions close; state lives in files.",
   "author": { "name": "JK" },
   "license": "MIT",

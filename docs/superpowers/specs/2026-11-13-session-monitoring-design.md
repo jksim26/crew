@@ -57,7 +57,7 @@ overlap hold. Each part is its own PR.
 
 | Event | Effect |
 |---|---|
-| `SessionStart` (startup, resume, clear, compact) | Create or refresh the session file. A resume keeps the same `session_id`, so the file and its files list carry over |
+| `SessionStart` (startup, resume, clear, compact) | Create or refresh the session file. Within one run (clear, compact) the file and its files list carry over. A session that exited cleanly was deleted by `SessionEnd`, so a later resume starts a fresh file (its edits are on disk or in git by then); after a crash the old file carries over |
 | `UserPromptSubmit` | Refresh `updated` |
 | `PostToolUse` matching `Edit\|Write\|MultiEdit\|NotebookEdit` | Add the edited path to `files` and refresh `updated` |
 | `SessionEnd` | Delete the session file |
