@@ -419,7 +419,7 @@ test("testCmdBase lets the agent run single test files without opening the inter
 test("allow_bash adds the project's own build/test commands, and nothing dangerous validates", () => {
   const p = agentPermissions(normalize({ repo: "a/b", owner_login: "a", test_cmd: "npm test",
     allow_bash: ["cargo test", "cargo clippy", "cargo fmt"] }));
-  for (const c of ["cargo test", "cargo clippy", "cargo fmt"]) assert.ok(p.allowed.includes(`Bash(${c}:*)`), c);
+  for (const c of ["cargo test", "cargo clippy", "cargo fmt"]) assert.ok(p.allowed.includes(`Bash(${c})`) && !p.allowed.includes(`Bash(${c}:*)`), c);
   assert.ok(p.disallowed.includes("Bash(git push:*)"));
   assert.ok(!agentPermissions(normalize({ repo: "a/b", owner_login: "a" })).allowed.some((x) => x.startsWith("Bash(cargo")));
 });
