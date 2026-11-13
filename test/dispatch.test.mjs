@@ -1235,3 +1235,18 @@ test("PM run fails twice: needs-jk with the error, pending cleared, cost charged
   assert.equal(e.cost, 5.5);
   assert.equal(l.days["2026-11-08"], 0.501);
 });
+
+test("PM decision is pinned to its own PR: another PR for the issue, or a fork, is never merged", async () => {
+  // A second open PR maps to the same issue: no decide job runs on it.
+  let root = tmpRoot();
+  stuckLedger(root, { pm_pending: PENDING, review_keys: ["r80"] });
+  let w = world({ openPrs: [stuckPr({ number: 13, headRefName: "agent/1-evil", headRefOid: "sha13" })], reviews: [], prView: liveView({ headRefOid: "sha13" }), stream: decisionStream({ decision: "merge", reason: "ok" }) });
+  await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(w.streams.filter(isDecide).length, 0);
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh pr merge")));
+
+  // The PR comes from a fork: no merge, the owner decides.
+  const { w: w2, r } = await decide({ decision: "merge", reason: "ok" }, { view: liveView({ isCrossRepository: true }) });
+  assert.equal(r.action, "pm-owner");
+  assert.ok(!w2.calls.some((c) => c.line.startsWith("gh pr merge")));
+});
