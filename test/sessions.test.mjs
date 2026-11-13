@@ -190,7 +190,19 @@ test("hooks.json is valid and covers the four events", () => {
   assert.equal(h.PostToolUse[0].matcher, "Edit|Write|MultiEdit|NotebookEdit");
   for (const [event, groups] of Object.entries(h)) for (const g of groups) for (const x of g.hooks) {
     assert.equal(x.type, "command");
-    assert.ok(x.command.includes('"${CLAUDE_PLUGIN_ROOT}/bin/crew" session-hook ' + event), x.command);
+    assert.ok(x.command.includes('"${CLAUDE_PLUGIN_ROOT}/bin/crew-hook" ' + event), x.command);
     assert.equal(x.timeout, 10);
   }
+});
+
+test("crew-hook never exits non-zero, even when crew itself fails to load", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  const fake = fs.mkdtempSync(path.join(os.tmpdir(), "crew-hook-"));
+  fs.mkdirSync(path.join(fake, "bin"));
+  fs.mkdirSync(path.join(fake, "lib"));
+  fs.copyFileSync(path.join(here, "..", "bin", "crew-hook"), path.join(fake, "bin", "crew-hook"));
+  fs.writeFileSync(path.join(fake, "lib", "cli.mjs"), "export const x = ;\n"); // a broken release
+  const r = spawnSync(process.execPath, [path.join(fake, "bin", "crew-hook"), "UserPromptSubmit"], { input: "{}", encoding: "utf8" });
+  assert.deepEqual([r.status, r.stdout, r.stderr], [0, "", ""]);
 });
