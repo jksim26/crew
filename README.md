@@ -92,7 +92,9 @@ shared out between them.
 
 **Overlap guard:** a new build waits while another open agent PR, or a running build, changes a
 file it will change. An open PR holds its files until it merges or closes, so the waiting build
-starts later from the merged branch, with no conflict round. The files an issue will change come
+starts later from the merged branch, with no conflict round. A live interactive session also holds
+the files it has edited (see `crew sessions`) until it closes, goes quiet for `session_quiet_min`
+(default 120 minutes) or runs `crew sessions clear`. The files an issue will change come
 from a `Writes: path/a.py, path/b.py` line in its body, or else from every path the body cites. An
 issue that cites no path runs unguarded; a path cited only for reference also counts, so use `Writes:` to narrow it. `Depends on #12` (or `blocked by #12`) makes a build wait
 until #12 is closed. Shared logs (`PROGRESS.md`, `LEARNINGS.md`, `crew-log/`, `wiki/log.md`) never

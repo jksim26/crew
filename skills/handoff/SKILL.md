@@ -26,9 +26,13 @@ this conversation.
 
 4. **Release the lease** if this session took one: `crew lease off`.
 
-5. **Commit the memory file** if the owner's workflow commits from sessions (say what you
+5. **Free this session's files:** run `crew sessions clear <id>`, using the `crew session id`
+   given at session start. Dev builds that touch the files you edited wait until you do, or until
+   the session closes or goes quiet for 2 hours.
+
+6. **Commit the memory file** if the owner's workflow commits from sessions (say what you
    changed). Otherwise leave it for them, and say so.
 
-6. **Tell the owner in 3 lines or fewer**: what was saved where, which issues were filed (links),
+7. **Tell the owner in 3 lines or fewer**: what was saved where, which issues were filed (links),
    and that the session can be closed. If they want the context smaller before continuing,
    suggest `/compact`.

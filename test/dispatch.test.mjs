@@ -1086,3 +1086,40 @@ test("cleanup: an error while cleaning never stops the tick", async () => {
   assert.equal(r.action, "built");
   assert.match(fs.readFileSync(path.join(root, ".crew", "dispatch.log"), "utf8"), /"action":"cleanup","outcome":"error"/);
 });
+
+function putSession(root, { id = "s1", files, minsAgo = 5, worktree = null } = {}) {
+  const dir = path.join(root, ".crew", "sessions");
+  fs.mkdirSync(dir, { recursive: true });
+  const at = new Date(NOW.getTime() - minsAgo * 60_000).toISOString();
+  fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ id, host: os.hostname(), machine: "mac", cwd: root, worktree, started: at, updated: at, files }));
+}
+
+test("overlap: a live session's edit holds an overlapping build", async () => {
+  const root = tmpRoot();
+  putSession(root, { files: ["lib/a.mjs"], worktree: "/x/.claude/worktrees/fix-it" });
+  const w = world({ issues: [ready(1, "Writes: lib/a.mjs")] });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "idle");
+  assert.match(r.skipped.find((x) => x.number === 1).reason, /waits for a session on mac \(fix-it\) \(both change lib\/a\.mjs\)/);
+});
+
+test("overlap: a session on other files does not hold", async () => {
+  const root = tmpRoot();
+  putSession(root, { files: ["lib/b.mjs"] });
+  const w = world({ issues: [ready(1, "Writes: lib/a.mjs")] });
+  assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "built");
+});
+
+test("overlap: exempt files never hold", async () => {
+  const root = tmpRoot();
+  putSession(root, { files: ["PROGRESS.md"] });
+  const w = world({ issues: [ready(1, "Writes: PROGRESS.md, lib/a.mjs")] });
+  assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "built");
+});
+
+test("overlap: a quiet session no longer holds", async () => {
+  const root = tmpRoot();
+  putSession(root, { files: ["lib/a.mjs"], minsAgo: 180 });
+  const w = world({ issues: [ready(1, "Writes: lib/a.mjs")] });
+  assert.equal((await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW })).action, "built");
+});
