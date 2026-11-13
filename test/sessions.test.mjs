@@ -126,3 +126,71 @@ test("clearSessions: one or all", () => {
 test("claudeEnv sets CREW_AGENT", () => {
   assert.equal(claudeEnv({}).CREW_AGENT, "1");
 });
+
+// ---- CLI: crew session-hook / crew sessions ------------------------------------------------
+import { main } from "../lib/cli.mjs";
+const sink = () => ({ data: "", write(s) { this.data += s; } });
+async function cli(argv, stdin = "") {
+  const out = sink(), err = sink();
+  const code = await main(argv, { stdout: out, stderr: err, readStdin: () => stdin });
+  return { code, out: out.data, err: err.data };
+}
+
+test("session-hook: prints the id on SessionStart only", async () => {
+  const root = repo();
+  const start = await cli(["session-hook", "SessionStart"], JSON.stringify({ session_id: "s1", cwd: root, source: "startup" }));
+  assert.equal(start.code, 0);
+  assert.deepEqual(JSON.parse(start.out), { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "crew session id: s1" } });
+  const prompt = await cli(["session-hook", "UserPromptSubmit"], JSON.stringify({ session_id: "s1", cwd: root }));
+  assert.deepEqual([prompt.code, prompt.out, prompt.err], [0, "", ""]);
+});
+
+test("session-hook: bad stdin exits 0 silently", async () => {
+  const r = await cli(["session-hook", "SessionStart"], "not json");
+  assert.deepEqual([r.code, r.out, r.err], [0, "", ""]);
+});
+
+test("session-hook: an error is logged in the repo, never shown", async () => {
+  const root = repo();
+  fs.mkdirSync(path.join(root, ".crew", "sessions"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".crew", "sessions", "s2.json"), "{}"); // a file with no files list
+  fs.chmodSync(path.join(root, ".crew", "sessions"), 0o500); // the write fails
+  const r = await cli(["session-hook", "UserPromptSubmit"], JSON.stringify({ session_id: "s2", cwd: root }));
+  fs.chmodSync(path.join(root, ".crew", "sessions"), 0o700);
+  assert.deepEqual([r.code, r.out, r.err], [0, "", ""]);
+  assert.match(fs.readFileSync(path.join(root, ".crew", "logs", "session-hook.log"), "utf8"), /"event":"UserPromptSubmit"/);
+});
+
+test("sessions: lists and clears", async () => {
+  const root = repo();
+  rec("PostToolUse", { session_id: "aaaaaaaa-1", cwd: root, tool_name: "Edit", tool_input: { file_path: path.join(root, "x.txt") } }, new Date());
+  rec("SessionStart", { session_id: "bbbbbbbb-2", cwd: root }, new Date());
+  const here = process.cwd();
+  process.chdir(root);
+  try {
+    const list = await cli(["sessions"]);
+    assert.equal(list.code, 0);
+    const lines = list.out.trim().split("\n");
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /^aaaaaaaa\t.+\tmain\topen 0m\tactive 0m ago\t1 files$/);
+    assert.equal(JSON.parse((await cli(["sessions", "--json"])).out).length, 2);
+    assert.equal((await cli(["sessions", "clear"])).code, 1);
+    assert.equal((await cli(["sessions", "clear", "--all"])).code, 0);
+    assert.equal((await cli(["sessions"])).out, "no sessions open on this machine\n");
+    const w = JSON.parse((await cli(["workers", "--json"])).out);
+    assert.deepEqual(w, { workers: [], sessions: [] });
+  } finally {
+    process.chdir(here);
+  }
+});
+
+test("hooks.json is valid and covers the four events", () => {
+  const h = JSON.parse(fs.readFileSync(new URL("../hooks/hooks.json", import.meta.url), "utf8")).hooks;
+  assert.deepEqual(Object.keys(h).sort(), ["PostToolUse", "SessionEnd", "SessionStart", "UserPromptSubmit"]);
+  assert.equal(h.PostToolUse[0].matcher, "Edit|Write|MultiEdit|NotebookEdit");
+  for (const [event, groups] of Object.entries(h)) for (const g of groups) for (const x of g.hooks) {
+    assert.equal(x.type, "command");
+    assert.ok(x.command.includes('"${CLAUDE_PLUGIN_ROOT}/bin/crew" session-hook ' + event), x.command);
+    assert.equal(x.timeout, 10);
+  }
+});
