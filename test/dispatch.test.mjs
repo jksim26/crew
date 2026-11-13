@@ -44,7 +44,7 @@ function world(opts = {}) {
     if (line.startsWith("gh pr view") && line.includes("--json state") && opts.prState) return ok(JSON.stringify({ state: opts.prState }));
     if (line.startsWith("gh pr create")) return ok("https://github.com/jk/proj/pull/12\n");
     if (cmd === "gh") return ok("");
-    if (line.startsWith("git worktree list")) return ok(opts.worktrees ?? "");
+    if (line.startsWith("git worktree list")) { if (opts.worktreeListThrows) throw new Error("EPERM"); return ok(opts.worktrees ?? ""); }
     if (line.startsWith("git worktree add")) {
       const wt = args[args.indexOf("-b") + 2];
       opts.onWorktreeAdd?.(wt);
@@ -1077,4 +1077,12 @@ test("cleanup: a worker records its worktree before creating it", async () => {
   const w = world({ onWorktreeAdd: (wt) => { seen = [wt, JSON.parse(fs.readFileSync(path.join(root, ".crew", "workers", "1.json"), "utf8")).wt]; } });
   await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
   assert.ok(seen && seen[0] === seen[1], `worker file wt ${seen?.[1]} != ${seen?.[0]}`);
+});
+
+test("cleanup: an error while cleaning never stops the tick", async () => {
+  const root = tmpRoot();
+  const w = world({ worktreeListThrows: true });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "built");
+  assert.match(fs.readFileSync(path.join(root, ".crew", "dispatch.log"), "utf8"), /"action":"cleanup","outcome":"error"/);
 });

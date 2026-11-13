@@ -38,7 +38,8 @@ longer alive, so a killed run can't hold disk space past the next tick.
   `git worktree list --porcelain` for this repo only. A worktree is an orphan when all of these
   hold:
   - its path matches `crew-(dev|review)-`;
-  - no live worker on this host records it as `wt`;
+  - no live worker file (any host: a repo on a shared drive shares `.git/worktrees`) records its
+    temp folder (`crew-dev-XXXXXX`, compared by name because git and Node spell paths differently);
   - its temp folder is older than this process's start.
 
   Review runs hold the same lock for their whole run, so none can be running while the lock is

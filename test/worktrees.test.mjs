@@ -106,7 +106,7 @@ test("cleanOrphans: a kept worktree's branch is never deleted as stray", () => {
   assert.ok(!f.calls.includes("git branch -D crew-work/7-1"));
 });
 
-test("cleanOrphans: default keep reads this host's live workers", () => {
+test("cleanOrphans: default keep reads every live worker file", () => {
   const r = tmpRoot();
   const dir = path.join(r, ".crew", "workers");
   fs.mkdirSync(dir, { recursive: true });
@@ -115,5 +115,35 @@ test("cleanOrphans: default keep reads this host's live workers", () => {
   const f = fake();
   cleanOrphans({ root: r, run: f.run, statMtime: old });
   assert.ok(!f.calls.some((c) => c.includes("remove --force /tmp/crew-dev-live/wt")));
-  assert.ok(f.calls.includes("git worktree remove --force /tmp/crew-dev-dead/wt"));
+  assert.ok(!f.calls.some((c) => c.includes("remove --force /tmp/crew-dev-dead/wt")));
+});
+
+test("cleanOrphans: a live worker's worktree is kept when git spells its path differently", () => {
+  // macOS: os.tmpdir() is /var/folders/..., git prints /private/var/folders/...; Windows: \ vs /.
+  const r = tmpRoot();
+  const dir = path.join(r, ".crew", "workers");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "7.json"), JSON.stringify({ issue: 7, host: os.hostname(), pid: process.pid, started: new Date().toISOString(), wt: "C:\\Users\\RUNNER~1\\Temp\\crew-dev-AbC123\\wt" }));
+  const f = fake({ porcelain: "worktree C:/r\nHEAD a\n\nworktree /private/var/folders/x/T/crew-dev-AbC123/wt\nHEAD b\nbranch refs/heads/crew-work/7-1\n" });
+  const out = cleanOrphans({ root: r, run: f.run, statMtime: old });
+  assert.equal(out.worktrees, 0);
+  assert.ok(!f.calls.some((c) => c.includes("remove --force")));
+});
+
+test("cleanOrphans: a worktree recorded by another host's live worker is kept", () => {
+  const r = tmpRoot();
+  const dir = path.join(r, ".crew", "workers");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "9.json"), JSON.stringify({ issue: 9, host: "other-host", pid: 1, started: new Date().toISOString(), wt: "/tmp/crew-dev-dead/wt" }));
+  const f = fake();
+  cleanOrphans({ root: r, run: f.run, statMtime: old });
+  assert.ok(!f.calls.some((c) => c.includes("remove --force /tmp/crew-dev-dead/wt")));
+  assert.ok(!f.calls.includes("git branch -D crew-work/8-1"));
+});
+
+test("cleanOrphans: a folder that cannot be removed does not stop the rest", () => {
+  const f = fake();
+  const out = cleanOrphans({ root: tmpRoot(), run: f.run, keep: new Set(), statMtime: old, rm: () => { const e = new Error("EBUSY"); e.code = "EBUSY"; throw e; } });
+  assert.equal(out.worktrees, 3);
+  assert.ok(f.calls.includes("git worktree prune"));
 });
