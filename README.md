@@ -371,6 +371,11 @@ overwrite each other.
   - `local` writes the files only
   - `commit` pushes straight to the default branch
 - **Role memory files:** the default is `docs/handoff/<role>.md`.
+- **lucid-dream (optional):** `"lucid_dream": {"remember": true}` saves each dev run's lesson, and
+  the decisions `/crew:handoff` records (`crew remember`), to a [lucid-dream](https://github.com/jksim26/lucid-dream)
+  server's inbox. Off unless set; crew works the same without it. The address and token are
+  machine-local: `LUCID_URL` (e.g. `http://pc:7878/mcp`) and `LUCID_TOKEN`, from the environment or
+  crew's secrets file. A dead server never fails a run, and the dev worker never sees the token.
 - **Per-machine commands:** `test_cmd` and `protected_paths_cmd` can be one string or a per-OS
   object. Use this when the command differs per machine, for example a Python venv:
 
