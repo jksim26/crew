@@ -1392,3 +1392,37 @@ test("dispatch: skips while crew is updating", async () => {
   assert.equal(r.action, "updating");
   assert.ok(!w.calls.some((c) => c.line.startsWith("gh ")));
 });
+
+test("lucid_dream.remember: a built issue's lesson is saved to shared memory after the PR opens; a dead server changes nothing", async () => {
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", test_cmd: "npm test", lucid_dream: { remember: true } });
+  const env = { PATH: "/bin", LUCID_URL: "http://pc:7878/mcp", LUCID_TOKEN: "ld-secret-token" };
+  const sent = [];
+  const fetchImpl = async (url, o) => { sent.push({ url, auth: o.headers.Authorization, args: JSON.parse(o.body).params.arguments }); return { ok: true, status: 200, json: async () => ({ result: { content: [{ text: "saved" }] } }) }; };
+  const w = world();
+  const r = await runDispatch({ root: tmpRoot(), config: cfg, run: w.run, runStream: w.runStream, now: NOW, env, fetchImpl });
+  assert.equal(r.action, "built");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].auth, "Bearer ld-secret-token");
+  assert.equal(sent[0].args.topic, "jk/proj");
+  assert.equal(sent[0].args.origin, "https://github.com/jk/proj/pull/12");
+  assert.match(sent[0].args.text, /jk\/proj #1 \(Add a slugify helper\): Tests live in test\/\*\.test\.mjs\./);
+  assert.ok(w.calls.findIndex((c) => c.line.startsWith("gh pr create")) >= 0);
+  assert.equal(w.streams[0].o.env.LUCID_TOKEN, undefined, "the dev worker never sees the memory token");
+
+  const root2 = tmpRoot();
+  const w2 = world();
+  const down = await runDispatch({ root: root2, config: cfg, run: w2.run, runStream: w2.runStream, now: NOW, env, fetchImpl: async () => { throw new Error("ECONNREFUSED"); } });
+  assert.equal(down.action, "built");
+  assert.match(fs.readFileSync(path.join(root2, ".crew", "dispatch.log"), "utf8"), /"action":"lucid-remember","outcome":"error","detail":"ECONNREFUSED"/);
+
+  // Off by default: the same run makes no call.
+  sent.length = 0;
+  const w3 = world();
+  await runDispatch({ root: tmpRoot(), config, run: w3.run, runStream: w3.runStream, now: NOW, env, fetchImpl });
+  assert.equal(sent.length, 0);
+
+  // No lesson, nothing to save.
+  const w4 = world({ stream: streamOk({ ...REPORT, lesson: null }) });
+  await runDispatch({ root: tmpRoot(), config: cfg, run: w4.run, runStream: w4.runStream, now: NOW, env, fetchImpl });
+  assert.equal(sent.length, 0);
+});

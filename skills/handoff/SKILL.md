@@ -19,6 +19,12 @@ this conversation.
    - what to pick up next time, with file paths or PR/issue links
    Do not copy the conversation. Do not write secrets.
 
+   Then save each decision to shared memory: run `crew remember --topic "<project name>" --body-file -`
+   once per decision, with the note on stdin (one subject per note, written to stand alone, with the
+   reason and absolute dates). Add `--said-by user` only for a decision the owner stated themself.
+   If it prints `skipped`, shared memory is off for this project: nothing more to do. Never put
+   secrets in a note.
+
 3. **File work instead of holding it.** For each thing that needs building that this session did
    not finish, run `crew queue new --title "<short imperative title>" --body-file -` with the
    context, acceptance criteria and links on stdin. These are filed as `needs-jk` proposals. Never
