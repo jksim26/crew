@@ -376,6 +376,13 @@ overwrite each other.
   server's inbox. Off unless set; crew works the same without it. The address and token are
   machine-local: `LUCID_URL` (e.g. `http://pc:7878/mcp`) and `LUCID_TOKEN`, from the environment or
   crew's secrets file. A dead server never fails a run, and the dev worker never sees the token.
+  `"lucid_dream": {"relay": true}` (needs `slack`) makes `crew watch` the owner's one channel: messages
+  other agents leave for the owner's lucid-dream agent (the one `LUCID_TOKEN` belongs to; broadcasts
+  to `all` are skipped) are posted to the Slack channel, one message each, and a reply written in
+  that thread by a `slack.commanders` user is sent back to the writing agent with `send`. Replies
+  are passed on as plain text, never run. Up to one watch interval (10 minutes) each way. A message
+  is read from the server once, so crew keeps it in `.crew/state.json` until Slack has it; threads
+  are followed for 7 days.
 - **Per-machine commands:** `test_cmd` and `protected_paths_cmd` can be one string or a per-OS
   object. Use this when the command differs per machine, for example a Python venv:
 

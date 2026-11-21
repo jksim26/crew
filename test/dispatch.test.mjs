@@ -1413,7 +1413,7 @@ test("lucid_dream.remember: a built issue's lesson is saved to shared memory aft
   const w2 = world();
   const down = await runDispatch({ root: root2, config: cfg, run: w2.run, runStream: w2.runStream, now: NOW, env, fetchImpl: async () => { throw new Error("ECONNREFUSED"); } });
   assert.equal(down.action, "built");
-  assert.match(fs.readFileSync(path.join(root2, ".crew", "dispatch.log"), "utf8"), /"action":"lucid-remember","outcome":"error","detail":"ECONNREFUSED"/);
+  assert.match(fs.readFileSync(path.join(root2, ".crew", "dispatch.log"), "utf8"), /"action":"lucid-remember","outcome":"error","detail":"cannot reach lucid-dream: ECONNREFUSED"/);
 
   // Off by default: the same run makes no call.
   sent.length = 0;
