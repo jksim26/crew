@@ -17,8 +17,8 @@ const okReply = reply({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text
 
 test("config: lucid_dream is off by default and validates", () => {
   assert.equal(normalize(base).lucid_dream, null);
-  assert.deepEqual(normalize({ ...base, lucid_dream: {} }).lucid_dream, { remember: false });
-  assert.deepEqual(on.lucid_dream, { remember: true });
+  assert.deepEqual(normalize({ ...base, lucid_dream: {} }).lucid_dream, { remember: false, relay: false });
+  assert.deepEqual(on.lucid_dream, { remember: true, relay: false });
   assert.ok(validate({ ...base, lucid_dream: { remember: "yes" } }).some((p) => /lucid_dream.remember/.test(p)));
   assert.ok(validate({ ...base, lucid_dream: { rember: true } }).some((p) => /unknown key "lucid_dream.rember"/.test(p)));
   assert.ok(validate({ ...base, lucid_dream: true }).some((p) => /"lucid_dream" must be an object/.test(p)));
@@ -63,7 +63,7 @@ test("remember: off means no call at all; on sends the note; a dead server never
   assert.deepEqual(bodies[0].params.arguments, { text: "a decision", topic: "proj", origin: "u", said_by: "user" });
 
   const dead = await remember({ config: on, text: "x", env, fetchImpl: async () => { throw new Error("ECONNREFUSED"); } });
-  assert.deepEqual([dead.ok, dead.why], [false, "ECONNREFUSED"]);
+  assert.deepEqual([dead.ok, dead.why], [false, "cannot reach lucid-dream: ECONNREFUSED"]);
 });
 
 test("agentEnv: the memory token never reaches the dev worker", () => {
