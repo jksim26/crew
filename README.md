@@ -109,6 +109,8 @@ issue shows as skipped, with the PR or issue it waits for.
 `watch` is the usual way to run dev. Every 10 minutes it does the plain checks (lock, lease,
 budget, WIP cap, queue). It wakes the model only when an issue is `ready` or a review needs a fix.
 It refreshes the Slack board when a label changed and posts one news line when something happened;
+while a tick runs, every label, PR or worker-phase change crew makes redraws the board within about
+3 seconds, so a long dev batch no longer leaves it up to 10 minutes behind;
 the same line is not repeated within 6 hours. `dispatch --at ...` still works for fixed times.
 
 To keep the dev worker off the subscription while other jobs need it, set local-time windows:
