@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { normalize, validate, machineNames } from "../lib/config.mjs";
 import { routeIssue, setMachine, thisMachine } from "../lib/machine.mjs";
-import { mrkdwn, collectBoard, renderBoard, renderBoardMarkdown, syncBoard, publishCanvas, refreshCanvases, postNews, briefNews, dispatchNews, boardHeader } from "../lib/slack.mjs";
+import { mrkdwn, collectBoard, renderBoard, renderBoardMarkdown, syncBoard, publishCanvas, refreshCanvases, postNews, briefNews, dispatchNews, boardHeader, BOARD_MAX_CHARS } from "../lib/slack.mjs";
 import { runWatch } from "../lib/watch.mjs";
 import { readState } from "../lib/brief.mjs";
 import { ensureLabels } from "../lib/queue.mjs";
@@ -79,6 +79,16 @@ test("board: grouped by state (furthest along wins), machine shown, header fixed
   assert.match(text, /<https:\/\/github.com\/jk\/proj\/issues\/1\|#1> Fix &lt;it&gt;/);
   assert.match(text, /Add the board · _mac_/);
   assert.doesNotMatch(text, /Not crew/);
+});
+
+test("board: many long titles still fit one Slack message; the rest are linked per column", () => {
+  const item = (n) => ({ number: n, title: `a very long issue title that keeps going ${"x".repeat(150)}`, url: `https://github.com/jk/proj/issues/${n}`, machine: null });
+  const col = (from) => Array.from({ length: 25 }, (_, i) => item(from + i));
+  const cols = { ready: col(100), doing: col(200), "in-review": col(300), blocked: col(400), "needs-jk": col(500) };
+  const text = renderBoard(config, cols, new Date("2026-11-08T12:00:00Z"));
+  assert.ok(text.length <= BOARD_MAX_CHARS, `board is ${text.length} chars`);
+  for (const state of Object.keys(cols)) assert.match(text, new RegExp(`label%3A${state.replace("-", "\\-")}\\|…and \\d+ more on GitHub>`));
+  assert.match(text, /<https:\/\/github.com\/jk\/proj\/issues\/100\|#100>/);
 });
 
 function fakeSlack({ pinned = [], failUpdate = null, canvas = {} } = {}) {
