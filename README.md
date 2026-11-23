@@ -294,8 +294,8 @@ overwrite each other.
    - Codex's findings (a P3 note is recorded and never starts a round);
    - the project's own PR gate (`gate_comment_prefix`, e.g. `"pr-gate"`): its effective
      `NOT merged` decision, with the P1/P2 lines of that head's reports (PRE-EXISTING, ADVISORY
-     and CLOSED lines excluded). A gate that reserves the PR for the owner (`never-auto-merge`), or
-     blocks with nothing crew can act on, puts the issue on `needs-jk`;
+     and CLOSED lines excluded). A gate that reserves the PR (`never-auto-merge`) leaves it in
+     review for a session to merge; a block with nothing crew can act on puts the issue on `needs-jk`;
    - failing CI checks on the PR's head, and a draft crew itself opened because its run fell short
      (one repair round per head; a repaired draft is marked ready for review).
    Build attempts do not limit fix rounds. When `caps.fix_rounds` is used up, crew closes the PR and
