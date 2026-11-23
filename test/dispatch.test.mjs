@@ -270,6 +270,17 @@ test("the project's PR gate: an effective NOT-merged decision becomes a fix roun
   assert.ok(gateFeedback(cfg, [raw[2]], null).unparsed);
 });
 
+test("a never-auto-merge from the PR gate leaves the PR in review, never needs-jk (#724)", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 1, attempts: 1, fix_rounds: 0, pr: 12, review_keys: [], last_push_at: "2026-11-08T08:00:00Z" } } });
+  const cfg = normalize({ repo: "jk/proj", owner_login: "jk", test_cmd: "npm test", gate_comment_prefix: "pr-gate" });
+  const gate = [{ id: 9, user: { login: "jk" }, created_at: "2026-11-08T09:55:00Z", body: "pr-gate: owner merge required: `scripts/pr_gate.py` is in the never-auto-merge set (head abc1234)." }];
+  const w = world({ openPrs: [{ number: 12, headRefName: "agent/1-x", url: "u" }], issueComments: gate, issues: [] });
+  await runDispatch({ root, config: cfg, run: w.run, runStream: w.runStream, now: NOW });
+  assert.ok(!w.calls.some((c) => c.line.includes("--add-label needs-jk")));
+  assert.equal(w.streams.length, 0);
+});
+
 test("the PR gate: carried OPEN findings are fix-round findings; an unparsed BLOCK report is handed over whole (#384)", () => {
   const cfg = normalize({ repo: "jk/proj", owner_login: "jk", gate_comment_prefix: "pr-gate" });
   const at = (m) => `2026-11-09T17:${m}:00Z`;
