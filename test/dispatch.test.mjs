@@ -1178,6 +1178,53 @@ test("after a PM go-again, the issue budget is the PM cap, not issue_budget_usd"
   assert.equal(r.action, "fixed");
 });
 
+test("#725: under one run's minimum left of the issue budget -> PM decision on the same PR, no dev run, no needs-jk", async () => {
+  const root = tmpRoot();
+  stuckLedger(root, { cost: 14.5334, attempts: 1, fix_rounds: 2, infra_retries: 2 });
+  const w = world({ openPrs: [stuckPr({ isDraft: true })], reviews: lastFinding });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "pm-queued");
+  assert.equal(w.streams.length, 0);
+  assert.ok(!w.calls.some((c) => c.line.includes("--add-label needs-jk")));
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh pr close 12")), "the branch's work is kept, not closed for a rebuild");
+  assert.deepEqual(loadLedger(root).issues[1].pm_pending.allowed, ["again", "owner"]);
+});
+
+test("#725: a PM go-again lifts the cap to pm_issue_budget_usd, so the fix round runs on the existing branch", async () => {
+  const root = tmpRoot();
+  stuckLedger(root, { cost: 14.5334, attempts: 1, fix_rounds: 0, pm_agains: 1 });
+  const w = world({ openPrs: [stuckPr({ isDraft: true })], reviews: lastFinding });
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "fixed");
+  const args = w.streams[0].args;
+  assert.equal(args[args.indexOf("--max-budget-usd") + 1], "5.00");
+});
+
+test("#725: a ready issue with under one run's minimum left is skipped, not started", async () => {
+  const root = tmpRoot();
+  saveLedger(root, { days: {}, issues: { 1: { cost: 14.6, attempts: 1, fix_rounds: 0, pr: null, review_keys: [] } } });
+  const w = world();
+  const r = await runDispatch({ root, config, run: w.run, runStream: w.runStream, now: NOW });
+  assert.equal(r.action, "idle");
+  assert.match(r.skipped.find((x) => x.number === 1).reason, /issue budget used \(\$14\.60\/\$15\)/);
+  assert.equal(w.streams.length, 0);
+});
+
+test("#725: a worker short of budget stops before any label, worktree or infra-retry change", async () => {
+  const root = tmpRoot();
+  // $24.10 of $25 spent today, shared by two builds: $0.45 each, under the $0.50 minimum.
+  saveLedger(root, { days: { "2026-11-08": 24.1 }, issues: {} });
+  const issues = [1, 2].map((n) => ({ number: n, title: `t${n}`, body: `edit lib/f${n}.mjs`, labels: [{ name: "ready" }], createdAt: "2026-11-01T00:00:00Z", url: `u${n}` }));
+  const w = world({ issues });
+  const r = await runDispatch({ root, config: { ...config, parallel: 2 }, run: w.run, runStream: w.runStream, now: NOW });
+  assert.deepEqual(r.results.map((x) => [x.action, x.outcome]), [["budget", "waiting"], ["budget", "waiting"]]);
+  assert.equal(w.streams.length, 0);
+  assert.ok(!w.calls.some((c) => c.line.startsWith("gh issue edit")), "no relabel: not doing, not ready, not needs-jk");
+  assert.ok(!w.calls.some((c) => c.line.includes("worktree add")));
+  const l = loadLedger(root);
+  for (const n of [1, 2]) assert.ok(!l.issues[n]?.infra_retries);
+});
+
 // ---- acting on the PM's decision ----
 const PENDING = { pr: 12, findings: [{ id: "r80", author: "codex", body: "P1: nope" }], allowed: ["again", "merge", "owner"], merge_blocked: null };
 const liveView = (o = {}) => ({ state: "OPEN", isDraft: false, mergeable: "MERGEABLE", headRefOid: "sha12", statusCheckRollup: [{ name: "test", conclusion: "SUCCESS" }], files: [{ path: "lib/a.mjs" }], ...o });
