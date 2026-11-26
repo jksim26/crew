@@ -245,7 +245,7 @@ test("daily board: the first sync after board_daily_at posts a fresh board, unpi
   const n = s.calls.length;
   const r2 = await syncBoard({ root, config: c, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: local(10, 8, 0) });
   assert.equal(r2.action, "reposted");
-  assert.deepEqual(s.calls.slice(n).map((x) => x.method), ["chat.postMessage", "pins.add", "chat.getPermalink", "pins.remove", "chat.update"]);
+  assert.deepEqual(s.calls.slice(n).map((x) => x.method), ["chat.postMessage", "pins.add", "pins.list", "chat.getPermalink", "pins.remove", "chat.update"]);
   assert.equal(s.calls.at(-2).body.timestamp, "100.1");
   assert.equal(s.calls.at(-1).body.ts, "100.1");
   assert.ok(!s.calls.at(-1).body.text.startsWith(boardHeader(c))); // findPinnedBoard can never pick the old one
@@ -338,6 +338,118 @@ test("watch: project canvases refresh before dispatch", async () => {
     news: async () => ({ ok: true }),
   });
   assert.deepEqual(order, ["canvases", "dispatch", "board"]);
+});
+
+// #804: a rollover the Slack board can never get stuck in, with overlapping or failing runs.
+const dailyCfg = normalize({ ...base, slack: { channel: "C0123ABCD", board_daily_at: "08:00" } });
+const local = (d, h, m) => new Date(2026, 10, d, h, m);
+const isStub = (t) => /^_An earlier crew board/.test(t);
+
+test("daily board (#804): a slow run that read yesterday's board cannot pull the state back off today's post", async () => {
+  const root = tmpRoot();
+  const env = tmpEnv();
+  const s = fakeSlack();
+  // Hold the slow run's chat.update until the repost has finished.
+  let open;
+  const gate = new Promise((r) => { open = r; });
+  let hold = false;
+  const fetchImpl = async (url, o) => {
+    if (hold && url.endsWith("chat.update")) { hold = false; await gate; }
+    return s.fetchImpl(url, o);
+  };
+  await syncBoard({ root, config: dailyCfg, run: ghRun(issues), env, fetchImpl, now: local(22, 18, 0) });
+  assert.equal(readState(root).slackBoard.ts, "100.1");
+  // A run that started before 08:00 (the tick still busy with a fix round) redraws yesterday's board...
+  hold = true;
+  const slow = syncBoard({ root, config: dailyCfg, run: ghRun(issues.slice(1)), env, fetchImpl, now: local(23, 7, 59) });
+  // ...while the 08:00 run posts today's board and retires yesterday's.
+  const r = await syncBoard({ root, config: dailyCfg, run: ghRun(issues), env, fetchImpl, now: local(23, 8, 0) });
+  assert.equal(r.action, "reposted");
+  assert.equal(readState(root).slackBoard.ts, "100.2");
+  open();
+  const late = await slow;
+  assert.equal(late.action, "skipped");
+  assert.match(late.why, /moved/);
+  // The state still points at today's post, and yesterday's ends as the stub, not a live copy.
+  assert.equal(readState(root).slackBoard.ts, "100.2");
+  assert.equal(readState(root).slackBoard.day, "2026-11-23");
+  const last = s.calls.filter((c) => c.method === "chat.update" && c.body.ts === "100.1").at(-1);
+  assert.ok(isStub(last.body.text));
+  // Later changes edit today's post.
+  const next = await syncBoard({ root, config: dailyCfg, run: ghRun(issues.slice(2)), env, fetchImpl, now: local(23, 8, 10) });
+  assert.equal(next.action, "updated");
+  assert.equal(s.calls.at(-1).body.ts, "100.2");
+});
+
+test("daily board (#804): while one run is posting today's board, others leave yesterday's alone", async () => {
+  const root = tmpRoot();
+  const env = tmpEnv();
+  const s = fakeSlack();
+  let open;
+  const gate = new Promise((r) => { open = r; });
+  let hold = false;
+  const fetchImpl = async (url, o) => {
+    if (hold && url.endsWith("chat.postMessage")) { hold = false; await gate; }
+    return s.fetchImpl(url, o);
+  };
+  await syncBoard({ root, config: dailyCfg, run: ghRun(issues), env, fetchImpl, now: local(22, 18, 0) });
+  hold = true;
+  const poster = syncBoard({ root, config: dailyCfg, run: ghRun(issues), env, fetchImpl, now: local(23, 8, 0) });
+  const n = s.calls.length;
+  const other = await syncBoard({ root, config: dailyCfg, run: ghRun(issues.slice(1)), env, fetchImpl, now: local(23, 8, 0) });
+  assert.equal(other.action, "skipped");
+  assert.match(other.why, /posting today's board/);
+  assert.equal(s.calls.length, n); // no edit to yesterday's board
+  open();
+  assert.equal((await poster).action, "reposted");
+  assert.equal(readState(root).slackBoard.ts, "100.2");
+});
+
+test("daily board (#804): a failed post at the rollover is retried next tick, never frozen on yesterday's", async () => {
+  const root = tmpRoot();
+  const env = tmpEnv();
+  const s = fakeSlack();
+  let down = false;
+  const fetchImpl = async (url, o) => {
+    if (down && url.endsWith("chat.postMessage")) throw new TypeError("fetch failed");
+    return s.fetchImpl(url, o);
+  };
+  await syncBoard({ root, config: dailyCfg, run: ghRun(issues), env, fetchImpl, now: local(22, 18, 0) });
+  down = true;
+  await assert.rejects(syncBoard({ root, config: dailyCfg, run: ghRun(issues), env, fetchImpl, now: local(23, 8, 0) }), /fetch failed/);
+  assert.equal(readState(root).slackBoard.day, "2026-11-22");
+  assert.equal(readState(root).slackBoard.reposting, undefined);
+  down = false;
+  const r = await syncBoard({ root, config: dailyCfg, run: ghRun(issues), env, fetchImpl, now: local(23, 8, 10) });
+  assert.equal(r.action, "reposted");
+  assert.equal(readState(root).slackBoard.day, "2026-11-23");
+});
+
+test("daily board (#804): a claim left by a run that died is taken over after 10 minutes", async () => {
+  const root = tmpRoot();
+  const env = tmpEnv();
+  const s = fakeSlack();
+  await syncBoard({ root, config: dailyCfg, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: local(22, 18, 0) });
+  const { writeState } = await import("../lib/brief.mjs");
+  const st = readState(root);
+  writeState(root, { ...st, slackBoard: { ...st.slackBoard, reposting: { day: "2026-11-23", at: local(23, 8, 0).toISOString() } } });
+  assert.equal((await syncBoard({ root, config: dailyCfg, run: ghRun(issues.slice(1)), env, fetchImpl: s.fetchImpl, now: local(23, 8, 5) })).action, "skipped");
+  assert.equal((await syncBoard({ root, config: dailyCfg, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: local(23, 8, 11) })).action, "reposted");
+});
+
+test("daily board (#804): the repost also retires an orphaned board an earlier race left pinned", async () => {
+  const root = tmpRoot();
+  const env = tmpEnv();
+  const orphan = { type: "message", message: { ts: "77.7", bot_id: "B1", text: `${boardHeader(dailyCfg)}\nstale` } };
+  const s = fakeSlack({ pinned: [orphan] });
+  const { writeState } = await import("../lib/brief.mjs");
+  writeState(root, { slackBoard: { channel: "C0123ABCD", ts: "55.5", hash: "x", day: "2026-11-23", at: local(23, 8, 0).toISOString() } });
+  const r = await syncBoard({ root, config: dailyCfg, run: ghRun(issues), env, fetchImpl: s.fetchImpl, now: local(24, 8, 0) });
+  assert.equal(r.action, "reposted");
+  for (const old of ["55.5", "77.7"]) {
+    assert.ok(s.calls.some((c) => c.method === "pins.remove" && c.body.timestamp === old));
+    assert.ok(isStub(s.calls.filter((c) => c.method === "chat.update" && c.body.ts === old).at(-1).body.text));
+  }
 });
 
 test("syncBoard: reuses a board this bot pinned earlier, and re-posts if it was deleted", async () => {
