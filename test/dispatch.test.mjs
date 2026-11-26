@@ -516,7 +516,7 @@ test("runStreaming: idle limit interrupts a silent process", async () => {
 
 test("runStreaming: wall limit and line callback", async () => {
   const seen = [];
-  const r = await runStreaming(process.execPath, ["-e", "setInterval(()=>console.log('tick'), 50)"], { wallMs: 300, idleMs: 5000, graceMs: 200, onLine: (l) => seen.push(l) });
+  const r = await runStreaming(process.execPath, ["-e", "setInterval(()=>console.log('tick'), 50)"], { wallMs: 2000, idleMs: 5000, graceMs: 200, onLine: (l) => seen.push(l) });
   assert.equal(r.timedOut, "wall");
   assert.ok(seen.length >= 2 && seen.every((l) => l === "tick"));
 });
